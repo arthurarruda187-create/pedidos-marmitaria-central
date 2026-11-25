@@ -1,5 +1,5 @@
 import { sb, SUPABASE_URL, SUPABASE_ANON_KEY, brl, esc, $, NOMES_PAGAMENTO, NOMES_PAG_STATUS, NOMES_STATUS, DIAS,
-  foneWhats, foneBonito, textoPedido, precoEfetivo, precoAPartir, CANAIS, APPS_DELIVERY, taxaDoBairro, kmBonito, carregarRuas, buscarRuas, MSG_WHATS_PADRAO, MSG_WHATS_ROTULO } from "./comum.js";
+  foneWhats, foneBonito, textoPedido, precoEfetivo, precoAPartir, CANAIS, APPS_DELIVERY, taxaDoBairro, kmBonito, carregarRuas, buscarRuas, MSG_WHATS_PADRAO, MSG_WHATS_ROTULO , kmLinhaReta, carregarLeaflet, desenharRaios, CORES_FAIXA, CSS_MAPA, taxaPorFaixa} from "./comum.js";
 import { ligarBotaoInstalar, manterTelaAcesa } from "./app.js";
 
 // ======================================================================
@@ -53,7 +53,7 @@ $("#sair").onclick = async () => { await sb.auth.signOut(); location.reload(); }
 // Navegação
 // ======================================================================
 const ABAS = { pedidos: telaPedidos, pdv: telaPdv, financeiro: telaFinanceiro, clientes: telaClientes, entregadores: telaEntregadores,
-  cardapio: telaCardapio, cupons: telaCupons, entrega: telaEntrega, loja: telaLoja, avaliacoes: telaAvaliacoes, mesas: telaMesas, whatsapp: telaWhatsapp };
+  cardapio: telaCardapio, cupons: telaCupons, entrega: telaEntrega, loja: telaLoja, avaliacoes: telaAvaliacoes, mesas: telaMesas, whatsapp: telaWhatsapp, vendidos: telaMaisVendidos, apps: telaApps };
 function irPara(nome) {
   if (!ABAS[nome]) nome = "pedidos";
   aba = nome;
@@ -219,7 +219,7 @@ function ligarSom(v) {
 }
 $("#chaveSom").onclick = () => ligarSom(!somAtivo);
 setInterval(() => {
-  const novos = [...pedidos.values()].filter((p) => p.status === "novo").length;
+  const novos = [...pedidos.values()].filter((p) => p.status === "novo" && !agendadoLonge(p)).length;
   if (novos) bip();
   document.title = novos ? `(${novos}) NOVO PEDIDO` : "Painel da loja";
   const c = $("#contNovos"); c.textContent = novos; c.classList.toggle("oculto", !novos);
@@ -228,13 +228,15 @@ setInterval(() => {
 // ======================================================================
 // Pedidos (tempo real)
 // ======================================================================
+let ultimaCarga = null; // maior atualizado_em já recebido (para buscar só o que mudou)
 async function carregarPedidos() {
   const [a, h] = await Promise.all([
     sb.from("pedidos").select("*").in("status", ["aguardando_pagamento", "novo", "preparo", "pronto", "saiu"]).order("criado_em").limit(500),
     sb.from("pedidos").select("*").gte("criado_em", hoje0().toISOString()).order("criado_em").limit(1000),
   ]);
+  if (a.error || h.error) return; // sem internet: mantém o que já está na tela
   pedidos = new Map();
-  for (const p of [...(a.data || []), ...(h.data || [])]) pedidos.set(p.id, p);
+  for (const p of [...(a.data || []), ...(h.data || [])]) { pedidos.set(p.id, p); if (!ultimaCarga || p.atualizado_em > ultimaCarga) ultimaCarga = p.atualizado_em; }
   if (aba === "pedidos") telaPedidos();
   autoImprimir();
 }
@@ -243,13 +245,22 @@ let colMovel = null, colMovelVisto = 0; // aba de coluna escolhida no celular
 function assinarTempoReal() {
   sb.channel("pedidos")
     .on("postgres_changes", { event: "*", schema: "public", table: "pedidos" }, (msg) => {
-      if (msg.eventType === "DELETE") pedidos.delete(msg.old.id); else pedidos.set(msg.new.id, msg.new);
+      if (msg.eventType === "DELETE") pedidos.delete(msg.old.id);
+      else { pedidos.set(msg.new.id, msg.new); if (!ultimaCarga || msg.new.atualizado_em > ultimaCarga) ultimaCarga = msg.new.atualizado_em; }
       if (aba === "pedidos") telaPedidos();
       autoImprimir();
     })
     .subscribe((st) => { conexao = st; if (st === "SUBSCRIBED") carregarPedidos(); else if (aba === "pedidos") telaPedidos(); });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) carregarPedidos(); });
-  setInterval(carregarPedidos, 20000);
+  // conferência leve a cada 20 s: só os pedidos que mudaram (economiza a franquia de dados do Supabase)
+  setInterval(async () => {
+    if (!ultimaCarga) return carregarPedidos();
+    const { data, error } = await sb.from("pedidos").select("*").gt("atualizado_em", ultimaCarga).order("atualizado_em").limit(200);
+    if (error || !data?.length) return;
+    for (const p of data) { pedidos.set(p.id, p); if (p.atualizado_em > ultimaCarga) ultimaCarga = p.atualizado_em; }
+    if (aba === "pedidos") telaPedidos();
+    autoImprimir();
+  }, 20000);
 }
 
 async function carregarEntregadores() {
@@ -285,6 +296,11 @@ function atualizarTempos() {
 }
 setInterval(atualizarTempos, 30000);
 
+// "qua 26/11 às 11:30"
+const textoAgenda = (ts) => { const d = new Date(ts); return `${DIAS[d.getDay()].slice(0, 3).toLowerCase()} ${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} às ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`; };
+// pedido agendado para daqui a mais de 1 hora: não toca a campainha ainda
+const agendadoLonge = (p) => p.agendado_para && new Date(p.agendado_para) - Date.now() > 3600000;
+
 function cardPedido(p) {
   const proximo = {
     novo: ["preparo", "✓ Aceitar pedido"], preparo: ["pronto", "Pronto"],
@@ -294,21 +310,26 @@ function cardPedido(p) {
   const ent = entregadores.find((e) => e.id === p.entregador_id);
   return `<div class="card ${p.status === "novo" ? "piscar" : ""}" data-id="${p.id}">
     <div class="topo"><b>#${p.numero}</b><span style="display:flex;gap:.3rem;align-items:center">${seloCanal(p)}<span class="muted">${hora(p.criado_em)}</span>${["novo", "preparo", "pronto", "saiu"].includes(p.status) ? `<span class="tempo" data-desde="${p.criado_em}" data-st="${p.status}"></span>` : ""}</span></div>
+    ${p.agendado_para ? `<div class="linha"><span class="badge-agenda">📅 Agendado: ${textoAgenda(p.agendado_para)}</span></div>` : ""}
     <div class="linha"><b>${esc(p.cliente_nome)}</b>${p.cliente_telefone ? ` · ${esc(foneBonito(p.cliente_telefone))}` : ""}</div>
+    ${p.empresa ? `<div class="linha">🏢 <b>${esc(p.empresa)}</b></div>` : ""}
     <div class="linha">${p.tipo === "entrega" ? `🛵 ${esc(p.endereco)}${p.bairro ? ` <b>· ${esc(p.bairro)}</b>` : ""}` : p.tipo === "mesa" ? `<b style="font-size:1.05rem">🍽️ MESA ${esc(p.mesa)}</b>` : "🏪 Retirada no local"}</div>
     <ul>${(p.itens || []).map((it) => `<li><b>${it.quantidade}x</b> ${esc(it.nome)}
       ${(it.adicionais || []).map((a) => `<small>+ ${a.quantidade > 1 ? a.quantidade + "x " : ""}${esc(a.nome)}</small>`).join("")}
-      ${it.observacao ? `<small>📝 ${esc(it.observacao)}</small>` : ""}</li>`).join("")}</ul>
+      ${it.observacao ? `<small>📝 ${esc(it.observacao)}</small>` : ""}${it.para ? `<small>👤 ${esc(it.para)}</small>` : ""}</li>`).join("")}</ul>
     ${p.observacao ? `<div class="linha">📝 ${esc(p.observacao)}</div>` : ""}
     <div class="linha" style="display:flex;justify-content:space-between;align-items:center;gap:.4rem"><b style="font-size:1rem">${brl(p.total)}</b>${badgePagamento(p)}</div>
     ${num(p.desconto) ? `<div class="linha muted">Desconto ${esc(p.cupom_codigo || "")}: −${brl(p.desconto)}</div>` : ""}
+    ${p.status === "entregue" && p.entregue_com_codigo ? `<div class="linha muted">🔐 Entregue com o código do cliente</div>` : ""}
+    ${p.entrega_pelo_app ? `<div class="linha"><span class="badge-agenda">🛵 Entrega feita pelo ${esc(CANAIS[p.canal]?.nome || p.canal)}</span></div>` : ""}
     ${p.troco_para ? `<div class="linha">💵 Troco para ${brl(p.troco_para)} <b>(levar ${brl(p.troco_para - p.total)})</b></div>` : ""}
-    ${p.tipo === "entrega" && entregadores.length ? `<div class="linha"><select class="campo" data-entregador>
+    ${p.tipo === "entrega" && !p.entrega_pelo_app && entregadores.length ? `<div class="linha"><select class="campo" data-entregador>
       <option value="">— escolher entregador —</option>${entregadores.filter((e) => e.ativo || e.id === p.entregador_id).map((e) => `<option value="${e.id}" ${e.id === p.entregador_id ? "selected" : ""}>${esc(e.nome)}</option>`).join("")}</select></div>` : ""}
     <div class="acoes">
       ${proximo ? `<button class="btn ${p.status === "novo" ? "ok" : "escuro"} principal" data-acao="status" data-para="${proximo[0]}">${proximo[1]}</button>` : ""}
       ${p.pagamento === "pix_entrega" && p.pagamento_status !== "pago" ? `<button class="btn sec peq" data-acao="enviarpix">💠 Enviar Pix</button><button class="btn sec peq" data-acao="pago">✓ Marcar pago</button>` : ""}
       <button class="btn sec peq" data-acao="imprimir">🖨 Imprimir</button>
+      ${(p.itens || []).some((it) => it.para) ? `<button class="btn sec peq" data-acao="etiquetas">🏷 Etiquetas</button>` : ""}
       ${p.cliente_telefone ? `<button class="btn sec peq" data-acao="whats">💬 Cliente</button>` : ""}
       ${ent?.telefone ? `<button class="btn sec peq" data-acao="whatsent">🛵 Entregador</button>` : ""}
       <button class="btn perigo peq" data-acao="cancelar">Cancelar</button>
@@ -316,7 +337,7 @@ function cardPedido(p) {
 }
 
 function telaPedidos() {
-  const lista = [...pedidos.values()].sort((a, b) => a.criado_em.localeCompare(b.criado_em));
+  const lista = [...pedidos.values()].sort((a, b) => (a.agendado_para || a.criado_em).localeCompare(b.agendado_para || b.criado_em));
   const de = (...st) => lista.filter((p) => st.includes(p.status));
   const ini = hoje0().toISOString();
   const validos = lista.filter((p) => p.criado_em >= ini && !["cancelado", "aguardando_pagamento"].includes(p.status));
@@ -368,8 +389,18 @@ function telaPedidos() {
 }
 
 async function atualizarPedido(id, campos) {
-  const { data, error } = await sb.from("pedidos").update(campos).eq("id", id).select().single();
-  if (error) { aviso("Não foi possível atualizar: " + error.message, "erro"); return null; }
+  const atual = pedidos.get(id);
+  let qy = sb.from("pedidos").update(campos).eq("id", id);
+  // mudança de status só vale se ninguém mexeu no pedido em outro aparelho nesse meio tempo
+  if ("status" in campos && atual) qy = qy.eq("status", atual.status);
+  const { data, error } = await qy.select().maybeSingle();
+  if (error || !data) {
+    const { data: novo } = await sb.from("pedidos").select("*").eq("id", id).maybeSingle();
+    if (novo) { pedidos.set(id, novo); if (aba === "pedidos") telaPedidos(); }
+    aviso(error ? "Não foi possível atualizar: " + error.message
+      : `Outra pessoa já mudou este pedido (agora está: ${NOMES_STATUS[novo?.status] ?? "?"}). A tela foi atualizada.`, "erro");
+    return null;
+  }
   pedidos.set(id, data);
   if (aba === "pedidos") telaPedidos();
   return data;
@@ -392,13 +423,14 @@ async function acao(tipo, id, para) {
     return ok;
   }
   if (tipo === "imprimir") return imprimir(p);
+  if (tipo === "etiquetas") return imprimirEtiquetas(p);
   if (tipo === "whats") {
     const msg = `Olá, ${p.cliente_nome.split(" ")[0]}! Pedido #${p.numero}: ${MSG_STATUS[p.status] ?? "estamos com seu pedido."}`;
     return window.open(`https://wa.me/${foneWhats(p.cliente_telefone)}?text=${encodeURIComponent(msg)}`, "_blank");
   }
   if (tipo === "whatsent") {
     const e = entregadores.find((x) => x.id === p.entregador_id);
-    const msg = `🛵 Entrega #${p.numero}\n${p.cliente_nome}${p.cliente_telefone ? " — " + foneBonito(p.cliente_telefone) : ""}\n📍 ${p.endereco}${p.bairro ? " — " + p.bairro : ""}\n💰 ${brl(p.total)} — ${NOMES_PAGAMENTO[p.pagamento]}${p.pagamento_status === "pago" ? " (JÁ PAGO)" : ""}${p.troco_para ? `\n💵 Levar troco para ${brl(p.troco_para)}` : ""}\nMapa: https://maps.google.com/?q=${encodeURIComponent((p.endereco || "") + " " + (p.bairro || ""))}`;
+    const msg = `🛵 Entrega #${p.numero}\n${p.cliente_nome}${p.cliente_telefone ? " — " + foneBonito(p.cliente_telefone) : ""}\n📍 ${p.endereco}${p.bairro ? " — " + p.bairro : ""}\n💰 ${brl(p.total)} — ${NOMES_PAGAMENTO[p.pagamento]}${p.pagamento_status === "pago" ? " (JÁ PAGO)" : ""}${p.troco_para ? `\n💵 Levar troco para ${brl(p.troco_para)}` : ""}\nMapa: https://maps.google.com/?q=${p.entrega_lat != null ? `${p.entrega_lat},${p.entrega_lng}` : encodeURIComponent((p.endereco || "") + " " + (p.bairro || ""))}`;
     return window.open(`https://wa.me/${foneWhats(e.telefone)}?text=${encodeURIComponent(msg)}`, "_blank");
   }
   if (tipo === "enviarpix") {
@@ -437,9 +469,11 @@ function cupomHtml(p, via = "") {
     <div class="data">${dt.toLocaleDateString("pt-BR")} às ${dt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</div>
     ${p.canal && p.canal !== "cardapio" ? `<div class="canal">${esc(canal?.nome || p.canal)}${p.id_externo ? ` · Nº ${esc(p.id_externo)}` : ""}</div>` : ""}
     <div class="tipo">${tipo}</div>
+    ${p.agendado_para ? `<div class="tipo">📅 AGENDADO<br>${textoAgenda(p.agendado_para).toUpperCase()}</div>` : ""}
 
     <div class="bloco">
       <div class="cli">${esc(p.cliente_nome)}</div>
+      ${p.empresa ? `<div>🏢 ${esc(p.empresa)}</div>` : ""}
       ${p.cliente_telefone ? `<div>📞 ${esc(foneBonito(p.cliente_telefone))}</div>` : ""}
       ${p.tipo === "entrega" ? `<div class="end">${esc(p.endereco || "")}</div>${p.bairro ? `<div class="bairro">${esc(p.bairro)}</div>` : ""}` : ""}
     </div>
@@ -449,6 +483,7 @@ function cupomHtml(p, via = "") {
       <div class="ln"><span><b class="q">${it.quantidade}x</b> <b>${esc(it.nome)}</b></span><span>${brl(it.total)}</span></div>
       ${(it.adicionais || []).map((a) => `<div class="ad">+ ${a.quantidade > 1 ? a.quantidade + "x " : ""}${esc(a.nome)}</div>`).join("")}
       ${it.observacao ? `<div class="obs-item">⚠ ${esc(it.observacao)}</div>` : ""}
+      ${it.para ? `<div class="ad">👤 <b>${esc(it.para)}</b></div>` : ""}
     </div>`).join("")}
 
     ${p.observacao ? `<div class="obs">📝 OBSERVAÇÃO<br><b>${esc(p.observacao)}</b></div>` : ""}
@@ -469,6 +504,34 @@ function cupomHtml(p, via = "") {
     <div class="rodape">Obrigado pela preferência! 😊</div>
   </section>`;
 }
+// Etiquetas: uma por marmita, com o nome de quem vai comer (pedido para empresas)
+function imprimirEtiquetas(p) {
+  const { papel } = confImp();
+  const larg = papel === "58" ? 48 : 72;
+  const etiquetas = (p.itens || []).flatMap((it) => Array.from({ length: it.quantidade }, () => it));
+  const w = window.open("", "etiquetas", "width=420,height=720");
+  if (!w) return aviso("Libere as janelas (pop-up) deste site para imprimir.", "erro");
+  w.document.open();
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas #${p.numero}</title><style>
+    @page { size: ${papel}mm auto; margin: 2mm; }
+    body { margin: 0; width: ${larg}mm; font: 13px/1.3 Arial, Helvetica, sans-serif; color: #000; }
+    .et { padding: 2mm 0 3mm; text-align: center; page-break-after: always; border-bottom: 1px dashed #000; }
+    .et:last-child { page-break-after: auto; }
+    .nome { font-size: 1.9em; font-weight: 900; text-transform: uppercase; word-break: break-word; }
+    .prod { font-size: 1.1em; font-weight: 700; margin-top: 1mm; }
+    .ad, .obs { font-size: .9em; }
+    .obs { border: 1.5px solid #000; display: inline-block; padding: .3mm 1.5mm; margin-top: 1mm; font-weight: 700; }
+    .rod { font-size: .85em; margin-top: 1.5mm; }
+  </style></head><body>${etiquetas.map((it, k) => `<div class="et">
+    <div class="nome">${esc(it.para || "—")}</div>
+    <div class="prod">${esc(it.nome)}</div>
+    ${(it.adicionais || []).map((a) => `<div class="ad">+ ${esc(a.nome)}</div>`).join("")}
+    ${it.observacao ? `<div class="obs">⚠ ${esc(it.observacao)}</div>` : ""}
+    <div class="rod">${p.empresa ? esc(p.empresa) + " · " : ""}Pedido #${p.numero} · ${k + 1}/${etiquetas.length}</div></div>`).join("")}
+  <script>window.onload = () => { window.focus(); window.print(); };<\/script></body></html>`);
+  w.document.close();
+}
+
 function imprimir(p, { auto = false } = {}) {
   if (!p) return;
   marcarImpresso(p.id);
@@ -536,6 +599,7 @@ function imprimir(p, { auto = false } = {}) {
 }
 
 // Logo em preto e branco pontilhado (dithering), como a impressora térmica imprime
+let fonteLogo = null; // imagem escolhida no computador (evita bloqueio de outro site)
 async function gerarLogoTermica(src, ajuste = 0, largura = 360) {
   const img = await new Promise((ok, falha) => { const i = new Image(); i.crossOrigin = "anonymous"; i.onload = () => ok(i); i.onerror = () => falha(new Error("não consegui abrir a logo")); i.src = src; });
   const h = Math.round(img.naturalHeight * largura / img.naturalWidth);
@@ -687,9 +751,9 @@ async function telaPdv() {
 
   function desenharProdutos() {
     const termo = pdv.busca.trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-    $("#pCats").innerHTML = [...(maisVendidos.length ? [["top", "⭐ Mais vendidos"]] : []), ...cd.cats.filter((c) => cd.prods.some((p) => p.ativo && p.categoria_id === c.id)).map((c) => [c.id, c.nome]), ["", "Todos"]]
+    $("#pCats").innerHTML = [...(maisVendidos.length ? [["top", "⭐ Mais vendidos"]] : []), ...cd.cats.filter((c) => cd.prods.some((p) => p.ativo && doDia(p) && p.categoria_id === c.id)).map((c) => [c.id, c.nome]), ["", "Todos"]]
       .map(([v, t]) => `<button data-cat="${v}" class="${pdv.cat === v ? "ativo" : ""}">${esc(t)}</button>`).join("");
-    let prods = cd.prods.filter((p) => p.ativo);
+    let prods = cd.prods.filter((p) => p.ativo && doDia(p)); // cardápio do dia
     if (termo) prods = prods.filter((p) => p.nome.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").includes(termo));
     else if (pdv.cat === "top") prods = maisVendidos.map((id) => prods.find((p) => p.id === id)).filter(Boolean);
     else if (pdv.cat) prods = prods.filter((p) => p.categoria_id === pdv.cat);
@@ -935,6 +999,87 @@ function escolherAdicionais(p, gs, opcoes, pronto) {
 // Financeiro
 // ======================================================================
 const periodo = { tipo: "7d", de: "", ate: "" };
+
+// ======================================================================
+// Mais vendidos e horário de pico
+// ======================================================================
+async function telaMaisVendidos() {
+  const [ini, fim, rotulo] = intervalo();
+  C().innerHTML = `<div class="topo-pag">${botaoMenu()}<h1>Mais vendidos e horário de pico</h1>
+    <div class="filtros">${[["hoje", "Hoje"], ["ontem", "Ontem"], ["7d", "7 dias"], ["30d", "30 dias"], ["mes", "Este mês"], ["mespassado", "Mês passado"]]
+      .map(([k, t]) => `<button data-per="${k}" class="${periodo.tipo === k ? "ativo" : ""}">${t}</button>`).join("")}</div></div>
+    <div id="mvCorpo"><p class="muted">Carregando…</p></div>`;
+  C().querySelectorAll("[data-per]").forEach((b) => b.onclick = () => { periodo.tipo = b.dataset.per; telaMaisVendidos(); });
+  const dur = fim - ini, iniAnt = new Date(ini - dur);
+  const h0 = hoje0(), ini28 = new Date(h0); ini28.setDate(ini28.getDate() - 28);
+  const desde = new Date(Math.min(iniAnt, ini28));
+  let todos;
+  try {
+    todos = await buscarTodos(() => sb.from("pedidos").select("criado_em,status,itens,total").gte("criado_em", desde.toISOString()).lt("criado_em", fim.toISOString()).order("criado_em"));
+  } catch (e) { $("#mvCorpo").innerHTML = `<p class="erro">Erro ao carregar: ${esc(e.message)}</p>`; return; }
+  const ok = todos.filter((p) => !["cancelado", "aguardando_pagamento"].includes(p.status));
+  const em = (a, b) => ok.filter((p) => { const t = new Date(p.criado_em); return t >= a && t < b; });
+  const atual = em(ini, fim), anterior = em(iniAnt, ini);
+  const somar = (lista) => {
+    const prods = new Map(), ads = new Map();
+    for (const p of lista) for (const it of p.itens || []) {
+      const x = prods.get(it.nome) || { nome: it.nome, q: 0, v: 0 }; x.q += it.quantidade; x.v += num(it.total); prods.set(it.nome, x);
+      for (const a of it.adicionais || []) { const y = ads.get(a.nome) || { nome: a.nome, q: 0 }; y.q += (a.quantidade || 1) * it.quantidade; ads.set(a.nome, y); }
+    }
+    return { prods, ads };
+  };
+  const A = somar(atual), P = somar(anterior);
+  const lista = [...A.prods.values()].sort((a, b) => b.q - a.q);
+  const totQ = lista.reduce((s, x) => s + x.q, 0) || 1, maxQ = Math.max(1, ...lista.map((x) => x.q));
+  const variacao = (nome, q) => { const ant = P.prods.get(nome)?.q || 0; if (!ant) return `<span class="muted">novo</span>`; const pct = Math.round((q - ant) / ant * 100);
+    return pct === 0 ? `<span class="muted">=</span>` : `<span style="color:${pct > 0 ? "var(--ok,#16a34a)" : "var(--perigo,#dc2626)"}">${pct > 0 ? "▲" : "▼"} ${Math.abs(pct)}%</span>`; };
+  const adsLista = [...A.ads.values()].sort((a, b) => b.q - a.q).slice(0, 12), maxA = Math.max(1, ...adsLista.map((x) => x.q));
+
+  // mapa de calor: dia da semana × hora
+  const grade = DIAS.map(() => new Array(24).fill(0));
+  for (const p of atual) { const t = new Date(p.criado_em); grade[t.getDay()][t.getHours()]++; }
+  const horasUsadas = [...Array(24).keys()].filter((hh) => grade.some((d) => d[hh]));
+  const hIni = horasUsadas.length ? Math.min(...horasUsadas) : 10, hFim = horasUsadas.length ? Math.max(...horasUsadas) : 14;
+  const maxG = Math.max(1, ...grade.flat());
+  let pico = null; grade.forEach((d, i) => d.forEach((n, hh) => { if (!pico || n > pico.n) pico = { d: i, hh, n }; }));
+  const porHora = new Array(24).fill(0); for (const p of atual) porHora[new Date(p.criado_em).getHours()]++;
+  const maxH = Math.max(1, ...porHora);
+
+  // quanto preparar amanhã: média das últimas 4 semanas no mesmo dia da semana
+  const amanha = new Date(h0); amanha.setDate(amanha.getDate() + 1);
+  const diaAm = amanha.getDay();
+  const mesmosDias = ok.filter((p) => { const t = new Date(p.criado_em); return t >= ini28 && t < h0 && t.getDay() === diaAm; });
+  const nDias = new Set(mesmosDias.map((p) => new Date(p.criado_em).toDateString())).size;
+  const porDia = new Map();
+  for (const p of mesmosDias) { const dk = new Date(p.criado_em).toDateString(); for (const it of p.itens || []) { const m = porDia.get(it.nome) || new Map(); m.set(dk, (m.get(dk) || 0) + it.quantidade); porDia.set(it.nome, m); } }
+  const preparar = [...porDia.entries()].map(([nome, m]) => { const vals = [...m.values()]; const soma = vals.reduce((a, b) => a + b, 0);
+    return { nome, media: soma / Math.max(1, nDias), max: Math.max(...vals) }; }).sort((a, b) => b.media - a.media).slice(0, 12);
+
+  $("#mvCorpo").innerHTML = `
+    <div class="kpis">
+      <div class="kpi"><span>Itens vendidos · ${esc(rotulo)}</span><b>${totQ === 1 && !lista.length ? 0 : totQ}</b><small>${atual.length} pedidos</small></div>
+      <div class="kpi"><span>Campeão</span><b style="font-size:1.05rem">${lista[0] ? esc(lista[0].nome) : "—"}</b><small>${lista[0] ? lista[0].q + " vendidos" : ""}</small></div>
+      <div class="kpi"><span>Horário de pico</span><b>${pico?.n ? `${DIAS[pico.d].slice(0, 3)} ${pico.hh}h` : "—"}</b><small>${pico?.n ? pico.n + " pedidos nessa hora" : "sem pedidos"}</small></div>
+    </div>
+    <div class="caixa"><h2>Produtos mais vendidos</h2>
+      ${lista.length ? lista.slice(0, 20).map((x) => `<div class="barra-h"><span class="nome" title="${esc(x.nome)}">${esc(x.nome)}</span><span class="trilho"><span class="enche" style="display:block;width:${(x.q / maxQ * 100).toFixed(1)}%"></span></span>
+        <span class="val"><b>${x.q}</b> · ${Math.round(x.q / totQ * 100)}% · ${variacao(x.nome, x.q)}</span></div>`).join("") : `<p class="vazio">Nenhuma venda no período.</p>`}
+      <p class="muted" style="font-size:.82rem;margin-bottom:0">${lista.length > 20 ? `Os 20 primeiros de ${lista.length} produtos. ` : ""}Quantidade · % dos itens · comparação com o período anterior de mesmo tamanho.</p></div>
+    <div class="caixa"><h2>📦 Quanto preparar ${DIAS[diaAm].toLowerCase()} (amanhã)</h2>
+      ${preparar.length ? `<table class="t"><tr><th>Produto</th><th>Média por ${DIAS[diaAm].toLowerCase()}</th><th>Maior venda</th></tr>${preparar.map((x) => `<tr><td>${esc(x.nome)}</td><td><b>${x.media.toFixed(1).replace(".", ",")}</b></td><td>${x.max}</td></tr>`).join("")}</table>
+        <p class="muted" style="font-size:.82rem;margin-bottom:0">Baseado nas últimas 4 ${DIAS[diaAm].toLowerCase()}s (${nDias} com vendas). Pedidos agendados para amanhã aparecem na tela de Pedidos.</p>`
+        : `<p class="vazio">Ainda não há vendas de ${DIAS[diaAm].toLowerCase()} nas últimas 4 semanas.</p>`}</div>
+    <div class="caixa"><h2>Pedidos por hora</h2>
+      <div class="colunas-hora">${[...Array(hFim - hIni + 1).keys()].map((i) => { const n = porHora[hIni + i]; return `<div style="height:${(n / maxH * 100).toFixed(1)}%" title="${hIni + i}h: ${n} pedidos">${n ? `<span>${n}</span>` : ""}</div>`; }).join("")}</div>
+      <div class="rotulos-hora">${[...Array(hFim - hIni + 1).keys()].map((i) => `<span>${hIni + i}h</span>`).join("")}</div></div>
+    <div class="caixa"><h2>Dia da semana × hora</h2>
+      <div class="rolagem"><table class="t" style="text-align:center"><tr><th></th>${[...Array(hFim - hIni + 1).keys()].map((i) => `<th>${hIni + i}h</th>`).join("")}</tr>
+      ${DIAS.map((d, i) => `<tr><td style="text-align:left"><b>${d.slice(0, 3)}</b></td>${[...Array(hFim - hIni + 1).keys()].map((k) => { const n = grade[i][hIni + k];
+        return `<td style="background:${n ? `rgba(220,38,38,${(0.12 + 0.78 * n / maxG).toFixed(2)})` : "transparent"};color:${n / maxG > .55 ? "#fff" : "inherit"};font-weight:${n ? 700 : 400}">${n || ""}</td>`; }).join("")}</tr>`).join("")}</table></div>
+      <p class="muted" style="font-size:.82rem;margin-bottom:0">Número de pedidos em cada dia e hora do período. Quanto mais forte a cor, mais movimento.</p></div>
+    <div class="caixa"><h2>Adicionais mais pedidos</h2>
+      ${adsLista.length ? adsLista.map((x) => `<div class="barra-h"><span class="nome">${esc(x.nome)}</span><span class="trilho"><span class="enche" style="display:block;width:${(x.q / maxA * 100).toFixed(1)}%"></span></span><span class="val"><b>${x.q}</b></span></div>`).join("") : `<p class="vazio">Nenhum adicional no período.</p>`}</div>`;
+}
 function intervalo() {
   const h = hoje0(), d = (n) => { const x = new Date(h); x.setDate(x.getDate() + n); return x; };
   switch (periodo.tipo) {
@@ -1132,10 +1277,21 @@ async function telaEntregadores() {
     ${entregadores.map((e) => `<tr data-e="${e.id}">
       <td><input class="campo" data-c="nome" value="${esc(e.nome)}"></td><td><input class="campo" data-c="telefone" value="${esc(e.telefone)}" placeholder="43999999999"></td>
       <td><input type="checkbox" data-c="ativo" ${e.ativo ? "checked" : ""}></td>
-      <td style="white-space:nowrap"><button class="btn sec peq" data-salvar>Salvar</button> <button class="btn perigo peq" data-apagar>×</button></td></tr>`).join("") || `<tr><td colspan="4" class="vazio">Cadastre seus entregadores para escolher quem leva cada pedido.</td></tr>`}
-    </table><p class="muted" style="margin-bottom:0">Só entram na conta do entregador os pedidos em que ele foi escolhido no card do pedido.</p></div>`;
+      <td style="white-space:nowrap"><button class="btn sec peq" data-salvar>Salvar</button> ${e.token ? `<button class="btn sec peq" data-link title="Copiar o link do entregador">🔗 Link</button> ${e.telefone ? `<button class="btn peq" data-link-zap>📲 Enviar link</button>` : ""}` : ""} <button class="btn perigo peq" data-apagar>×</button></td></tr>`).join("") || `<tr><td colspan="4" class="vazio">Cadastre seus entregadores para escolher quem leva cada pedido.</td></tr>`}
+    </table><p class="muted" style="margin-bottom:0">Só entram na conta do entregador os pedidos em que ele foi escolhido no card do pedido.
+      <br>🔗 <b>Link do entregador:</b> ele abre no celular, vê as entregas dele, avisa que saiu e <b>finaliza com o código</b> que o cliente recebe. Não precisa de senha — não compartilhe o link com outras pessoas.</p></div>`;
 
   C().querySelectorAll("[data-pe]").forEach((b) => b.onclick = () => { perEnt.tipo = b.dataset.pe; telaEntregadores(); });
+  const linkEnt = (e) => new URL(`entregador.html?t=${e.token}`, location.href).href;
+  C().querySelectorAll("[data-link]").forEach((b) => b.onclick = async () => {
+    const e = entregadores.find((x) => x.id === b.closest("[data-e]").dataset.e);
+    try { await navigator.clipboard.writeText(linkEnt(e)); aviso("Link copiado", "ok"); } catch { prompt("Copie o link:", linkEnt(e)); }
+  });
+  C().querySelectorAll("[data-link-zap]").forEach((b) => b.onclick = () => {
+    const e = entregadores.find((x) => x.id === b.closest("[data-e]").dataset.e);
+    const msg = `Olá, ${e.nome.split(" ")[0]}! Este é o seu link de entregas da ${loja.nome} 🛵\n${linkEnt(e)}\n\nAbra no celular: lá aparecem as suas entregas, o botão "Saí para entrega" e o campo para finalizar com o código que o cliente passar.`;
+    window.open(`https://wa.me/${foneWhats(e.telefone)}?text=${encodeURIComponent(msg)}`, "_blank");
+  });
   $("#peDia").onchange = (e) => { perEnt.dia = e.target.value; perEnt.tipo = "dia"; telaEntregadores(); };
   $("#peMes").onchange = (e) => { perEnt.mes = e.target.value; perEnt.tipo = "escolhermes"; telaEntregadores(); };
 
@@ -1232,7 +1388,7 @@ async function telaCardapio() {
       ${prods.filter((x) => x.categoria_id === k.id).map((x) => `
         <div class="linha-prod ${x.ativo ? "" : "inativo"}">
           <div class="mini" style="${imgCss(x.foto_url)}"></div>
-          <div><b>${esc(x.nome)}</b> ${x.destaque ? `<span class="badge alerta">⭐ destaque</span>` : ""}${x.sugerir ? ` <span class="badge">➕ peça também</span>` : ""}<br>
+          <div><b>${esc(x.nome)}</b> ${x.destaque ? `<span class="badge alerta">⭐ destaque</span>` : ""}${x.sugerir ? ` <span class="badge">➕ peça também</span>` : ""}${x.dias_semana?.length ? ` <span class="badge-agenda">📅 ${x.dias_semana.map((d) => DIAS[d].slice(0, 3)).join(", ")}</span>` : ""}<br>
             <span class="muted">${precoEfetivo(x) < num(x.preco) ? `<b style="color:var(--ok)">${brl(precoEfetivo(x))}</b> <s>${brl(x.preco)}</s>` : num(x.preco) === 0 && precoAPartir(x, cd.grupos, cd.opcoes) > 0 ? `a partir de ${brl(precoAPartir(x, cd.grupos, cd.opcoes))} (preço pelo tamanho)` : brl(x.preco)}${x.ativo ? "" : " · oculto"}</span></div>
           <label class="check"><input type="checkbox" data-esgotar="${x.id}" ${x.esgotado ? "checked" : ""}>Esgotado</label>
           <button class="btn sec peq" data-editar="${x.id}">Editar</button><span></span>
@@ -1267,13 +1423,27 @@ async function telaCardapio() {
   C().querySelectorAll("[data-editar]").forEach((b) => b.onclick = () => editarProduto(cd, b.dataset.editar));
 }
 
+async function tipoImagem(arq) {
+  // arquivo salvo sem extensão (ex.: "...blob"): descobre o tipo pelos primeiros bytes
+  if (/^image\//.test(arq.type)) return arq.type;
+  const b = new Uint8Array(await arq.slice(0, 12).arrayBuffer());
+  if (b[0] === 0x89 && b[1] === 0x50) return "image/png";
+  if (b[0] === 0xff && b[1] === 0xd8) return "image/jpeg";
+  if (b[0] === 0x47 && b[1] === 0x49) return "image/gif";
+  if (b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return "image/webp";
+  return "image/png";
+}
 async function enviarFoto(arq, pasta) {
-  const ext = (arq.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const tipo = await tipoImagem(arq);
+  const ext = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/svg+xml": "svg" }[tipo] || "png";
   const caminho = `${pasta}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-  const up = await sb.storage.from("fotos").upload(caminho, arq, { upsert: true, contentType: arq.type });
+  const up = await sb.storage.from("fotos").upload(caminho, arq, { contentType: tipo });
   if (up.error) throw up.error;
   return sb.storage.from("fotos").getPublicUrl(caminho).data.publicUrl;
 }
+
+// cardápio do dia: o produto aparece hoje?
+const doDia = (p, dia = new Date().getDay()) => !p.dias_semana?.length || p.dias_semana.includes(dia);
 
 async function editarProduto(cd, id, categoriaId) {
   const novo = !id;
@@ -1305,6 +1475,8 @@ async function editarProduto(cd, id, categoriaId) {
       <label class="check"><input type="checkbox" id="pSug" ${p.sugerir ? "checked" : ""}>➕ Sugerir na sacola ("Peça também")</label>
       <label class="check"><input type="checkbox" id="pEsg" ${p.esgotado ? "checked" : ""}>Esgotado</label>
     </div>
+    <label class="rot">📅 Dias em que aparece <span class="muted">(cardápio do dia — nenhum marcado = todos os dias)</span></label>
+    <div class="dias-prod" id="pDias">${DIAS.map((d, i) => `<label class="chip-dia"><input type="checkbox" value="${i}" ${(p.dias_semana || []).includes(i) ? "checked" : ""}>${d.slice(0, 3)}</label>`).join("")}</div>
     <h3 style="margin:1.1rem 0 .2rem">Adicionais / opções</h3>
     <p class="muted" style="margin:0;font-size:.82rem">Ex.: "Sabor" mínimo 1 máximo 1 (obrigatório escolher um); "Extras" mínimo 0 máximo 5.</p>
     <div id="grupos"></div>
@@ -1363,7 +1535,8 @@ async function editarProduto(cd, id, categoriaId) {
       const arq = $("#pFoto", m).files[0];
       if (arq) foto_url = await enviarFoto(arq, "produtos");
       let r = await sb.from("produtos").upsert({ id: p.id, categoria_id: $("#pCat", m).value, nome, descricao: $("#pDesc", m).value.trim(), preco, preco_promocional: promo,
-        foto_url, ordem: Number($("#pOrdem", m).value) || 0, ativo: $("#pAtivo", m).checked, esgotado: $("#pEsg", m).checked, destaque: $("#pDest", m).checked, sugerir: $("#pSug", m).checked });
+        foto_url, ordem: Number($("#pOrdem", m).value) || 0, ativo: $("#pAtivo", m).checked, esgotado: $("#pEsg", m).checked, destaque: $("#pDest", m).checked, sugerir: $("#pSug", m).checked,
+        dias_semana: (() => { const d = [...m.querySelectorAll("#pDias input:checked")].map((i) => Number(i.value)); return d.length && d.length < 7 ? d : null; })() });
       if (r.error) throw r.error;
       const gIds = gs.map((g) => g.id);
       let del = sb.from("grupos_adicionais").delete().eq("produto_id", p.id);
@@ -1461,7 +1634,7 @@ async function telaEntrega() {
   const semKm = () => bairros.filter((b) => b.ativo && b.distancia_km == null).length;
   C().innerHTML = `<div class="topo-pag">${botaoMenu()}<h1>Entrega e horários</h1></div>
     <div class="caixa"><h2>Como cobrar a entrega</h2>
-      <div class="seg" style="max-width:420px">${[["bairro", "📍 Por bairro"], ["raio", "📏 Por raio (km)"]].map(([v, t]) => `<button data-modo="${v}" class="${modo === v ? "ativo" : ""}">${t}</button>`).join("")}</div>
+      <div class="seg" style="max-width:620px">${[["bairro", "📍 Por bairro"], ["raio", "📏 Por km do bairro"], ["mapa", "🗺️ Raio no mapa (aiqfome)"]].map(([v, t]) => `<button data-modo="${v}" class="${modo === v ? "ativo" : ""}">${t}</button>`).join("")}</div>
       <p class="muted" id="explicaModo" style="margin:.6rem 0"></p>
       <div class="grade2">
         <div><label class="rot">Endereço da loja (ponto de partida)</label><input class="campo" id="eOrigem" value="${esc(loja.endereco_origem || "")}">
@@ -1471,6 +1644,10 @@ async function telaEntrega() {
           <button class="btn sec peq" id="addFx" style="margin-top:.4rem">+ faixa</button></div>
       </div>
       <div class="erro" id="eErro"></div><button class="btn" id="eSalvar">Salvar forma de cobrança</button>
+    </div>
+    <div class="caixa"><h2><span>🗺️ Mapa de entrega</span> <span class="muted" style="font-size:.85rem;font-weight:400" id="mInfo">Clique no mapa para simular um endereço</span></h2>
+      <div id="mapaEnt" style="height:440px;border-radius:12px;border:1px solid var(--linha);background:#eef"></div>
+      <p class="muted" style="margin:.5rem 0 0;font-size:.85rem">Os círculos são as faixas de km medidas em <b>linha reta</b> a partir da loja 🏪. Arraste a loja para ajustar o ponto de partida (depois clique em Salvar forma de cobrança). Bolinhas = bairros, na cor da faixa em que caem.</p>
     </div>
     <div class="caixa"><h2><span>Bairros (<span id="nB">${bairros.length}</span>)</span> <span style="display:flex;gap:.4rem;flex-wrap:wrap">
         <button class="btn sec peq" id="calcKm">📏 Calcular distâncias</button><button class="btn peq" id="addBairro">+ Bairro</button></span></h2>
@@ -1507,7 +1684,9 @@ async function telaEntrega() {
     $("#hErro").textContent = ""; $("#hSalvar").textContent = "Salvo ✓"; setTimeout(() => $("#hSalvar") && ($("#hSalvar").textContent = "Salvar horários"), 1500);
   };
 
-  const explicar = () => $("#explicaModo").innerHTML = modo === "raio"
+  const explicar = () => $("#explicaModo").innerHTML = modo === "mapa"
+    ? "Igual ao aiqfome: na sacola o cliente <b>marca a casa no mapa</b> e a taxa sai da distância em <b>linha reta</b> até a loja, pelas faixas abaixo (os círculos do mapa). Fora do último círculo, não entrega."
+    : modo === "raio"
     ? "A taxa sai da <b>distância de carro</b> entre a loja e o bairro, pelas faixas abaixo. A taxa própria do bairro é ignorada."
     : "Cada bairro usa a <b>taxa própria</b>. Bairro com taxa vazia usa a faixa de km. Sem km nem taxa, vale a taxa fixa da aba Loja.";
   const lerFx = () => C().querySelectorAll("[data-fx]").forEach((i) => fx[i.dataset.fx][i.dataset.c] = Number(i.value.replace(",", ".")) || 0);
@@ -1515,7 +1694,47 @@ async function telaEntrega() {
     C().querySelectorAll("[data-rem-fx]").forEach((b) => b.onclick = () => { lerFx(); fx.splice(b.dataset.remFx, 1); $("#tabFx").innerHTML = desenharFaixas(); ligarFx(); redesenharB(); });
     C().querySelectorAll("[data-fx]").forEach((i) => i.onchange = () => { lerFx(); redesenharB(); });
   };
-  const redesenharB = () => { $("#corpoB").innerHTML = desenharBairros(); $("#nSemKm").textContent = semKm(); $("#nB").textContent = bairros.length; ligarB(); };
+  const redesenharB = () => { $("#corpoB").innerHTML = desenharBairros(); $("#nSemKm").textContent = semKm(); $("#nB").textContent = bairros.length; ligarB(); redesenharMapa(); };
+  // ---- mapa com os raios ----
+  let L = null, mapa = null, camadas = [], pinoLoja = null, pinoTeste = null;
+  const pontoLoja = () => lerCoord() || (loja.lat != null ? { lat: loja.lat, lng: loja.lng } : null);
+  function redesenharMapa() {
+    if (!mapa) return;
+    camadas.forEach((c) => c.remove()); camadas = [];
+    const o = pontoLoja(); if (!o) return;
+    camadas = desenharRaios(L, mapa, o, fx).filter((c) => { if (c.options.icon?.options.className === "pino-loja") { c.remove(); return false; } return true; });
+    if (!pinoLoja) {
+      pinoLoja = L.marker([o.lat, o.lng], { draggable: true, icon: L.divIcon({ className: "pino-loja", html: "🏪", iconSize: [30, 30], iconAnchor: [15, 15] }) }).addTo(mapa);
+      pinoLoja.on("dragend", () => { const p = pinoLoja.getLatLng(); $("#eCoord").value = p.lat.toFixed(6) + ", " + p.lng.toFixed(6); redesenharMapa(); $("#mInfo").textContent = "Loja movida — clique em Salvar forma de cobrança"; });
+    }
+    const ord = [...fx].filter((f) => f.ate > 0).sort((a, b) => a.ate - b.ate);
+    for (const b of bairros.filter((b) => b.ativo && b.lat != null)) {
+      const km = kmLinhaReta(o.lat, o.lng, b.lat, b.lng), k = ord.findIndex((f) => km <= f.ate);
+      const cor = k < 0 ? "#64748b" : CORES_FAIXA[k % CORES_FAIXA.length];
+      camadas.push(L.circleMarker([b.lat, b.lng], { radius: 5, color: "#fff", weight: 1, fillColor: cor, fillOpacity: 1 })
+        .bindTooltip(`${esc(b.nome)} · ${kmBonito(km)} em linha reta${b.distancia_km != null ? ` · ${kmBonito(b.distancia_km)} de carro` : ""}`).addTo(mapa));
+    }
+  }
+  (async () => {
+    try {
+      L = await carregarLeaflet();
+      if (!$("#mapaEnt")) return;
+      if (!document.getElementById("cssMapa")) { const st = document.createElement("style"); st.id = "cssMapa"; st.textContent = CSS_MAPA; document.head.appendChild(st); }
+      const o = pontoLoja() || { lat: -23.55, lng: -51.46 };
+      const maior = Math.max(2, ...fx.map((f) => Number(f.ate) || 0));
+      mapa = L.map("mapaEnt", { scrollWheelZoom: false }).setView([o.lat, o.lng], 13);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(mapa);
+      mapa.fitBounds(L.latLng(o.lat, o.lng).toBounds(maior * 2000));
+      mapa.on("click", (e) => {
+        const p = pontoLoja(); if (!p) return;
+        const km = kmLinhaReta(p.lat, p.lng, e.latlng.lat, e.latlng.lng), t = taxaPorFaixa(km, fx);
+        pinoTeste?.remove();
+        pinoTeste = L.marker(e.latlng, { icon: L.divIcon({ className: "pino-cliente", html: "📍", iconSize: [30, 30], iconAnchor: [15, 28] }) }).addTo(mapa);
+        $("#mInfo").innerHTML = `Ponto clicado: <b>${kmBonito(km)}</b> em linha reta · ${t == null ? '<b style="color:#dc2626">fora da área</b>' : `taxa <b>${t ? brl(t) : "grátis"}</b>`}`;
+      });
+      redesenharMapa();
+    } catch (e) { if ($("#mapaEnt")) $("#mapaEnt").innerHTML = `<p class="vazio">${esc(e.message)}</p>`; }
+  })();
   explicar(); ligarFx();
   C().querySelectorAll("[data-modo]").forEach((b) => b.onclick = () => { modo = b.dataset.modo; C().querySelectorAll("[data-modo]").forEach((x) => x.classList.toggle("ativo", x === b)); explicar(); redesenharB(); });
   $("#addFx").onclick = () => { lerFx(); const ult = fx[fx.length - 1]; fx.push({ ate: ult ? ult.ate + 2 : 2, taxa: ult ? ult.taxa + 2 : 5 }); $("#tabFx").innerHTML = desenharFaixas(); ligarFx(); };
@@ -1523,8 +1742,9 @@ async function telaEntrega() {
   $("#eSalvar").onclick = async () => {
     lerFx();
     const faixas = fx.filter((f) => f.ate > 0).sort((a, b) => a.ate - b.ate);
-    if (modo === "raio" && !faixas.length) return $("#eErro").textContent = "Cadastre ao menos uma faixa de km.";
+    if (modo !== "bairro" && !faixas.length) return $("#eErro").textContent = "Cadastre ao menos uma faixa de km.";
     const c = lerCoord();
+    if (modo === "mapa" && !c && loja.lat == null) return $("#eErro").textContent = "Informe as coordenadas da loja (ou arraste a 🏪 no mapa).";
     const { error } = await sb.from("loja").update({ modo_taxa: modo, faixas_km: faixas, endereco_origem: $("#eOrigem").value.trim(), ...(c ? c : {}) }).eq("id", 1);
     if (error) return $("#eErro").textContent = error.message;
     $("#eErro").textContent = ""; await carregarLoja(); fx = [...loja.faixas_km]; $("#tabFx").innerHTML = desenharFaixas(); ligarFx();
@@ -1735,6 +1955,77 @@ async function telaMesas() {
 // ======================================================================
 // WhatsApp automático (Z-API)
 // ======================================================================
+// ======================================================================
+// Apps de delivery (iFood, 99Food, Keeta): pedidos entram sozinhos no painel
+// ======================================================================
+const INFO_APPS = {
+  ifood: { nome: "iFood", cor: "#ea1d2c", ajuda: `<ol style="margin:.3rem 0 .4rem;padding-left:1.2rem">
+      <li>Crie a conta em <a href="https://developer.ifood.com.br" target="_blank" rel="noopener">developer.ifood.com.br</a> com o CNPJ (o iFood pede CNPJ com atividade de tecnologia).</li>
+      <li>Em <b>Meus apps</b>, crie um app <b>Centralizado</b> e marque os módulos Order e Merchant.</li>
+      <li>Cole aqui o <b>Client ID</b> e o <b>Client Secret</b>. Antes da aprovação, use as chaves do app de teste e a loja de teste.</li>
+      <li>Peça a <b>homologação</b>. Depois de aprovado, autorize a sua loja no Portal do Parceiro e cole o <b>ID da loja (merchant id)</b>.</li></ol>` },
+  "99food": { nome: "99Food", cor: "#ffb800", od: true, ajuda: `<p style="margin:.3rem 0">A 99Food usa o padrão <b>Open Delivery</b>. Peça o cadastro como software parceiro no Portal do Parceiro / suporte da 99Food. Eles passam o <b>endereço da API</b>, o <b>Client ID</b> e o <b>Client Secret</b>. Cadastre lá o endereço de aviso (webhook) abaixo.</p>` },
+  keeta: { nome: "Keeta", cor: "#ffd000", od: true, ajuda: `<p style="margin:.3rem 0">A Keeta usa o padrão <b>Open Delivery</b>. Cadastre o sistema como <b>Software Service</b> no portal de desenvolvedor da Keeta (api-docs.mykeeta.com) para receber o <b>Client ID</b> e o <b>Client Secret</b>. Autorize a sua loja e cadastre o endereço de aviso (webhook) abaixo.</p>` },
+};
+async function telaApps() {
+  C().innerHTML = `<div class="topo-pag">${botaoMenu()}<h1>Apps de delivery</h1></div><p class="muted">Carregando…</p>`;
+  const [{ data: cfgs, error }, { data: logs }] = await Promise.all([
+    sb.from("integracoes").select("plataforma,ativo,client_id,client_secret,merchant_id,base_url,confirmar_auto,ultimo_sync,ultimo_erro,ultimo_erro_em").order("plataforma"),
+    sb.from("integracao_log").select("*").order("id", { ascending: false }).limit(40)]);
+  if (error) { C().innerHTML = `<div class="topo-pag">${botaoMenu()}<h1>Apps de delivery</h1></div><p class="erro">Rode a atualização do banco (migração 13) para usar esta tela. ${esc(error.message)}</p>`; return; }
+  const porApp = Object.fromEntries((cfgs || []).map((c) => [c.plataforma, c]));
+  const webhook = (pl) => `${SUPABASE_URL}/functions/v1/integracoes?plataforma=${pl}`;
+  const quando = (t) => { if (!t) return "nunca"; const s = Math.round((Date.now() - new Date(t)) / 1000); return s < 90 ? `há ${s} s` : s < 5400 ? `há ${Math.round(s / 60)} min` : new Date(t).toLocaleString("pt-BR"); };
+  const cartao = (pl) => { const c = porApp[pl] || {}, i = INFO_APPS[pl];
+    const estado = !c.ativo ? `<span class="badge">desligado</span>` : c.ultimo_erro ? `<span class="badge perigo">com erro</span>` : c.ultimo_sync ? `<span class="badge ok">conectado</span>` : `<span class="badge alerta">aguardando</span>`;
+    return `<div class="caixa" data-app="${pl}"><h2><span><span style="display:inline-block;width:.8rem;height:.8rem;border-radius:50%;background:${i.cor};margin-right:.4rem"></span>${i.nome}</span> ${estado}</h2>
+      <details ${c.client_id ? "" : "open"}><summary class="muted" style="cursor:pointer">Como conseguir as chaves</summary>${i.ajuda}</details>
+      <div class="grade2">
+        <div><label class="rot">Client ID</label><input class="campo" data-k="client_id" value="${esc(c.client_id || "")}" autocomplete="off"></div>
+        <div><label class="rot">Client Secret</label><input class="campo" data-k="client_secret" type="password" autocomplete="new-password" placeholder="${c.client_secret ? "•••••• salvo (digite para trocar)" : ""}"></div>
+        <div><label class="rot">ID da loja no ${i.nome} <span class="muted">(merchant id)</span></label><input class="campo" data-k="merchant_id" value="${esc(c.merchant_id || "")}"></div>
+        ${i.od ? `<div><label class="rot">Endereço da API (Open Delivery)</label><input class="campo" data-k="base_url" value="${esc(c.base_url || "")}" placeholder="https://…"></div>` : "<div></div>"}
+      </div>
+      ${i.od ? `<label class="rot">Endereço de aviso (webhook) para cadastrar no ${i.nome}</label><div style="display:flex;gap:.4rem"><input class="campo" readonly value="${esc(webhook(pl))}"><button class="btn sec peq" data-copiar-wh="${pl}">Copiar</button></div>` : ""}
+      <div style="display:flex;gap:1.2rem;flex-wrap:wrap;margin-top:.6rem">
+        <label class="check"><input type="checkbox" data-k="confirmar_auto" ${c.confirmar_auto !== false ? "checked" : ""}>Aceitar pedidos automaticamente</label>
+        <label class="check"><input type="checkbox" data-k="ativo" ${c.ativo ? "checked" : ""}><b>Integração ligada</b></label></div>
+      <p class="muted" style="font-size:.85rem;margin:.4rem 0">Última busca: ${quando(c.ultimo_sync)}${c.ultimo_erro ? ` · <span style="color:var(--perigo)">Erro ${quando(c.ultimo_erro_em)}: ${esc(c.ultimo_erro)}</span>` : ""}</p>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap"><button class="btn" data-salvar-app>Salvar</button><button class="btn sec" data-testar-app>🔌 Testar conexão</button></div>
+      <div class="erro" data-msg></div></div>`; };
+  C().innerHTML = `<div class="topo-pag">${botaoMenu()}<h1>Apps de delivery</h1></div>
+    <div class="caixa"><p style="margin:0">Com a integração ligada, os pedidos do app <b>entram sozinhos</b> na tela de Pedidos (a cada 30 s), são impressos como os outros e cada botão do painel (aceitar, pronto, saiu, cancelar) avisa o app. Nos pedidos com <b>entrega própria</b>, o entregador finaliza no link dele <b>com o código do cliente</b>, conferido no próprio iFood.</p>
+      <p class="muted" style="margin:.5rem 0 0;font-size:.88rem">As chaves ficam guardadas no seu banco e só o dono da loja vê. Cancelamentos feitos no app também aparecem aqui.</p></div>
+    ${["ifood", "99food", "keeta"].map(cartao).join("")}
+    <div class="caixa"><h2>aiqfome</h2><p class="muted" style="margin:0">O aiqfome só libera a API para sistemas parceiros dele. Quando você tiver o contato da parceria, me avise que eu ligo aqui do mesmo jeito. Por enquanto, lance os pedidos do aiqfome pelo <b>Lançar pedido</b> (botão do app).</p></div>
+    <div class="caixa"><h2>Registro <button class="btn sec peq" id="appsAtualizar">↻ Atualizar</button></h2>
+      ${(logs || []).length ? `<div class="rolagem"><table class="t"><tr><th>Quando</th><th>App</th><th>O quê</th><th>Detalhe</th></tr>${logs.map((l) => `<tr><td style="white-space:nowrap">${new Date(l.em).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</td><td>${esc(INFO_APPS[l.plataforma]?.nome || l.plataforma || "")}</td><td>${l.ok ? "✓" : "✗"} ${esc(l.acao || "")}</td><td style="font-size:.85rem">${esc(l.detalhe || "")}</td></tr>`).join("")}</table></div>` : `<p class="vazio">Nada ainda.</p>`}</div>`;
+  $("#appsAtualizar").onclick = telaApps;
+  C().querySelectorAll("[data-copiar-wh]").forEach((b) => b.onclick = async () => { try { await navigator.clipboard.writeText(webhook(b.dataset.copiarWh)); aviso("Copiado", "ok"); } catch { prompt("Copie:", webhook(b.dataset.copiarWh)); } });
+  C().querySelectorAll("[data-app]").forEach((box) => {
+    const pl = box.dataset.app, msg = box.querySelector("[data-msg]");
+    const ler = () => { const d = {}; box.querySelectorAll("[data-k]").forEach((i) => { const k = i.dataset.k; if (i.type === "checkbox") d[k] = i.checked; else if (k === "client_secret") { if (i.value.trim()) d[k] = i.value.trim(); } else d[k] = i.value.trim() || null; }); return d; };
+    box.querySelector("[data-salvar-app]").onclick = async () => {
+      const d = ler();
+      if (d.ativo && !(d.client_id && (d.client_secret || porApp[pl]?.client_secret))) { msg.textContent = "Para ligar, preencha o Client ID e o Client Secret."; return; }
+      if (d.ativo && INFO_APPS[pl].od && !d.base_url) { msg.textContent = "Preencha o endereço da API do app."; return; }
+      const { error } = await sb.from("integracoes").update({ ...d, token: null, token_expira: null, atualizado_em: new Date().toISOString() }).eq("plataforma", pl);
+      if (error) { msg.textContent = error.message; return; }
+      msg.textContent = ""; aviso(`${INFO_APPS[pl].nome} salvo${d.ativo ? " e ligado" : ""}`, "ok"); telaApps();
+    };
+    box.querySelector("[data-testar-app]").onclick = async (e) => {
+      const b = e.target; b.disabled = true; b.textContent = "Testando…"; msg.textContent = "";
+      try {
+        const { data: { session } } = await sb.auth.getSession();
+        const r = await fetch(`${SUPABASE_URL}/functions/v1/integracoes`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ acao: "testar", plataforma: pl }) });
+        const j = await r.json().catch(() => ({}));
+        if (j.ok) { msg.style.color = "var(--ok, #16a34a)"; msg.textContent = "✓ " + (j.info || "Conectado"); } else { msg.style.color = ""; msg.textContent = j.erro || `Falhou (${r.status}). Salve as chaves antes de testar.`; }
+      } catch { msg.style.color = ""; msg.textContent = "Não consegui falar com o servidor."; }
+      b.disabled = false; b.textContent = "🔌 Testar conexão";
+    };
+  });
+}
+
 async function telaWhatsapp() {
   C().innerHTML = `<div class="topo-pag">${botaoMenu()}<h1>WhatsApp automático</h1></div><div id="wCorpo"><p class="muted">Carregando…</p></div>`;
   const [{ data: cfg }, { data: log }] = await Promise.all([
@@ -1770,7 +2061,7 @@ async function telaWhatsapp() {
       <div style="display:flex;gap:.5rem;align-items:end;margin-top:1rem;flex-wrap:wrap"><div><label class="rot">Testar: enviar para</label><input class="campo" id="zTel" inputmode="tel" placeholder="43 99999-9999"></div>
         <button class="btn sec" id="zTeste" ${conectado ? "" : "disabled"}>📲 Enviar mensagem de teste</button></div></div>
     <div class="caixa"><h2>Mensagens</h2>
-      <p class="muted" style="margin-top:0">Palavras entre chaves são trocadas sozinhas: <code>{nome}</code> <code>{numero}</code> <code>{total}</code> <code>{link}</code> <code>{tempo}</code> <code>{entregador}</code> <code>{motivo}</code> <code>{pix}</code> (chave e valor do Pix, quando o cliente escolhe Pix). Deixe uma mensagem vazia para não enviar naquele momento.</p>
+      <p class="muted" style="margin-top:0">Palavras entre chaves são trocadas sozinhas: <code>{nome}</code> <code>{numero}</code> <code>{total}</code> <code>{link}</code> <code>{tempo}</code> <code>{entregador}</code> <code>{motivo}</code> <code>{pix}</code> (chave e valor do Pix, quando o cliente escolhe Pix) <code>{codigo}</code> (código de entrega). Deixe uma mensagem vazia para não enviar naquele momento.</p>
       ${Object.keys(MSG_WHATS_PADRAO).map((st) => `<div class="msg-st"><div class="cab"><b>${MSG_WHATS_ROTULO[st]}</b><button class="link" data-padrao="${st}" style="color:var(--suave)">restaurar padrão</button></div>
         <textarea class="campo" rows="3" data-msg="${st}">${esc(msgs[st] ?? MSG_WHATS_PADRAO[st])}</textarea></div>`).join("")}
       <button class="btn" id="mSalvarTxt">Salvar mensagens</button></div>
@@ -1852,6 +2143,7 @@ function telaLoja() {
         <div style="flex:1;min-width:220px">
           <label class="rot">Mais clara ⟷ Mais escura</label><input type="range" id="liAjuste" min="-60" max="60" value="0" style="width:100%">
           <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
+            <label class="btn sec" style="cursor:pointer">📁 Escolher imagem<input type="file" id="liArq" accept="image/*" hidden></label>
             <button class="btn sec" id="liGerar">🔄 Gerar da logo</button><button class="btn" id="liSalvar" disabled>Salvar logo da impressão</button>
             ${l.logo_impressao_url ? `<button class="btn perigo" id="liTirar">Não imprimir logo</button>` : ""}</div>
           <p class="muted" style="font-size:.85rem">Bematech MP-4200 TH: use papel 80 mm (botão 🖨 na tela de Pedidos).</p></div>
@@ -1865,6 +2157,15 @@ function telaLoja() {
       <div style="display:flex;gap:1.5rem">${ck("aceita_entrega", "Faz entrega")}${ck("aceita_retirada", "Aceita retirada no local")}</div>
       <div class="grade4">${tx("taxa_entrega", "Taxa fixa (R$)", 'type="number" min="0" step="0.01"')}${tx("pedido_minimo", "Pedido mínimo (R$)", 'type="number" min="0" step="0.01"')}${tx("tempo_entrega", "Tempo de entrega")}${tx("tempo_retirada", "Tempo de retirada")}</div>
       <p class="muted" style="margin-bottom:0">A taxa fixa só vale para bairro sem km e sem taxa própria (ou se não houver bairros). Faixas de km e bairros ficam em "Entrega e horários". O tempo também pode ser mudado direto na tela de Pedidos.</p>
+    </div>
+    <div class="caixa"><h2>📅 Pedido agendado</h2>
+      ${ck("aceita_agendamento", "Aceitar pedidos agendados (ex.: pedir à noite para receber no almoço)")}
+      <div class="grade2">${tx("agendar_dias", "Até quantos dias antes dá para agendar", 'type="number" min="0" max="14"')}<div></div></div>
+      <p class="muted" style="margin-bottom:0">O cliente só escolhe horários dentro do seu horário de funcionamento. Pedido agendado chega na hora em que é feito, com o selo 📅 no card.</p>
+    </div>
+    <div class="caixa"><h2>⭐ Avaliação no Google</h2>
+      ${tx("link_avaliacao_google", "Link para avaliar a loja no Google", 'placeholder="https://g.page/r/…/review"')}
+      <p class="muted" style="margin-bottom:0">Quando o cliente dá nota 5 no pedido, aparece um botão convidando a avaliar a loja no Google. Para achar o link: Google Meu Negócio → Pedir avaliações → copiar link.</p>
     </div>
     <div class="caixa"><h2>Pagamento</h2>
       ${ck("aceita_cartao_entrega", "💳 Cartão na maquininha")}
@@ -1881,18 +2182,22 @@ function telaLoja() {
     const f = e.target.files[0]; if (!f) return;
     $(prev).style.backgroundImage = `url(${URL.createObjectURL(f)})`;
     try { const url = await enviarFoto(f, pasta); const { error } = await sb.from("loja").update({ [campo]: url }).eq("id", 1); if (error) throw error; await carregarLoja();
-      if (campo === "logo_url") { try { await salvarLogoTermica(await gerarLogoTermica(url)); telaLoja(); } catch {} } }
+      if (campo === "logo_url") { fonteLogo = URL.createObjectURL(f); try { await salvarLogoTermica(await gerarLogoTermica(fonteLogo)); telaLoja(); } catch {} } }
     catch (err) { aviso("Erro ao enviar a imagem: " + (err.message || err), "erro"); return; }
     aviso("Imagem atualizada", "ok");
   };
   subir("#upLogo", "#prevLogo", "logo_url", "loja"); subir("#upCapa", "#prevCapa", "capa_url", "loja");
   let liBlob = null;
   const gerarPrev = async () => {
-    if (!loja.logo_url) return aviso("Envie a logo da loja primeiro (campo Logo acima).", "erro");
-    try { liBlob = await gerarLogoTermica(loja.logo_url, Number($("#liAjuste").value)); $("#liPrev").src = URL.createObjectURL(liBlob); $("#liVazio").classList.add("oculto"); $("#liSalvar").disabled = false; }
+    const fonte = fonteLogo || loja.logo_url;
+    if (!fonte) return aviso("Escolha a imagem da logo (botão 📁 Escolher imagem).", "erro");
+    try {
+      try { liBlob = await gerarLogoTermica(fonte, Number($("#liAjuste").value)); }
+      catch { throw new Error("Não consegui abrir essa logo. Use o botão 📁 Escolher imagem e selecione o arquivo da logo."); } $("#liPrev").src = URL.createObjectURL(liBlob); $("#liVazio").classList.add("oculto"); $("#liSalvar").disabled = false; }
     catch (e) { aviso(e.message, "erro"); }
   };
   $("#liGerar").onclick = gerarPrev;
+  $("#liArq").onchange = (e) => { const f = e.target.files[0]; if (!f) return; fonteLogo = URL.createObjectURL(f); gerarPrev(); };
   $("#liAjuste").onchange = gerarPrev;
   $("#liSalvar").onclick = async () => {
     if (!liBlob) return;
@@ -1905,6 +2210,8 @@ function telaLoja() {
     const dados = {};
     C().querySelectorAll("[data-c]").forEach((i) => { dados[i.dataset.c] = i.type === "checkbox" ? i.checked : i.type === "number" ? Number(i.value) || 0 : i.value.trim(); });
     dados.whatsapp = String(dados.whatsapp).replace(/\D/g, "");
+    if (dados.link_avaliacao_google && !/^https:\/\//.test(dados.link_avaliacao_google)) return $("#sErro").textContent = "O link do Google precisa começar com https://";
+    dados.link_avaliacao_google = dados.link_avaliacao_google || null;
     if (!dados.aceita_entrega && !dados.aceita_retirada) return $("#sErro").textContent = "Ative entrega ou retirada.";
     if (dados.aceita_pix_entrega && !dados.chave_pix) return $("#sErro").textContent = "Informe a chave Pix da loja.";
     if (!["aceita_pix_online", "aceita_cartao_online", "aceita_dinheiro", "aceita_cartao_entrega", "aceita_pix_entrega"].some((k) => dados[k])) return $("#sErro").textContent = "Ative ao menos uma forma de pagamento.";

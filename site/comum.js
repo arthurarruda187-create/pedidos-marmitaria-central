@@ -132,7 +132,7 @@ export function taxaDoBairro(loja, b) {
   const km = b.distancia_km == null ? null : Number(b.distancia_km);
   const fx = loja.faixas_km || [];
   const pelaFaixa = km != null && fx.length ? taxaPorFaixa(km, fx) : undefined;
-  if (loja.modo_taxa === "raio") {
+  if (loja.modo_taxa === "raio" || loja.modo_taxa === "mapa") {
     if (pelaFaixa !== undefined) return pelaFaixa;
     return b.taxa != null ? Number(b.taxa) : Number(loja.taxa_entrega);
   }
@@ -179,7 +179,7 @@ export const MSG_WHATS_PADRAO = {
   novo: "Olá, {nome}! 😊 Recebemos seu pedido *#{numero}* na *{loja}*.\nTotal: *{total}*\n{pix}Acompanhe aqui: {link}",
   preparo: "👨‍🍳 {nome}, seu pedido *#{numero}* foi aceito e já está sendo preparado! Previsão: {tempo}.",
   pronto: "✅ {nome}, seu pedido *#{numero}* está pronto! Pode vir buscar. 🏪",
-  saiu: "🛵 {nome}, seu pedido *#{numero}* saiu para entrega{entregador}! Já já chega aí.",
+  saiu: "🛵 {nome}, seu pedido *#{numero}* saiu para entrega{entregador}! Já já chega aí.{codigo}",
   entregue: "🎉 Pedido *#{numero}* entregue. Bom apetite, {nome}!\nConta pra gente como foi: {link}",
   cancelado: "❌ {nome}, seu pedido *#{numero}* foi cancelado.{motivo}\nQualquer dúvida, é só responder esta mensagem.",
 };
@@ -187,3 +187,79 @@ export const MSG_WHATS_ROTULO = {
   novo: "📋 Pedido recebido", preparo: "👨‍🍳 Aceito / em preparo", pronto: "✅ Pronto para retirar",
   saiu: "🛵 Saiu para entrega", entregue: "🎉 Entregue", cancelado: "❌ Cancelado",
 };
+
+// ---------- Mapa (raio em linha reta, igual ao aiqfome) ----------
+export function kmLinhaReta(lat1, lng1, lat2, lng2) {
+  const r = (g) => g * Math.PI / 180;
+  const a = Math.sin(r(lat2 - lat1) / 2) ** 2 + Math.cos(r(lat1)) * Math.cos(r(lat2)) * Math.sin(r(lng2 - lng1) / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(a));
+}
+export const CORES_FAIXA = ["#16a34a", "#65a30d", "#ca8a04", "#ea580c", "#dc2626", "#be185d", "#7c3aed", "#2563eb"];
+let leafletPromessa = null;
+/** Carrega o Leaflet (mapa do OpenStreetMap) só quando precisar. */
+export function carregarLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+  return leafletPromessa ??= new Promise((ok, falha) => {
+    const css = document.createElement("link"); css.rel = "stylesheet"; css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"; document.head.appendChild(css);
+    const js = document.createElement("script"); js.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    js.onload = () => ok(window.L); js.onerror = () => { leafletPromessa = null; falha(new Error("Não consegui carregar o mapa")); };
+    document.head.appendChild(js);
+  });
+}
+/** Desenha a loja e os círculos das faixas de km. Devolve as camadas criadas. */
+export function desenharRaios(L, mapa, loja, faixas, { rotulos = true } = {}) {
+  const camadas = [];
+  const fx = [...(faixas || [])].filter((f) => Number(f.ate) > 0).sort((a, b) => b.ate - a.ate); // maior primeiro (fica embaixo)
+  fx.forEach((f) => {
+    const k = [...fx].reverse().indexOf(f), cor = CORES_FAIXA[k % CORES_FAIXA.length];
+    const c = L.circle([loja.lat, loja.lng], { radius: Number(f.ate) * 1000, color: cor, weight: 2, fillColor: cor, fillOpacity: 0.08, interactive: false }).addTo(mapa);
+    camadas.push(c);
+    if (rotulos) {
+      const topo = L.latLng(loja.lat + Number(f.ate) / 111.32, loja.lng);
+      camadas.push(L.marker(topo, { interactive: false, icon: L.divIcon({ className: "rotulo-raio", html: `<span style="border-color:${cor};color:${cor}">até ${String(f.ate).replace(".", ",")} km · ${Number(f.taxa) ? brl(f.taxa) : "grátis"}</span>`, iconSize: null }) }).addTo(mapa));
+    }
+  });
+  camadas.push(L.marker([loja.lat, loja.lng], { icon: L.divIcon({ className: "pino-loja", html: "🏪", iconSize: [30, 30], iconAnchor: [15, 15] }) }).addTo(mapa));
+  return camadas;
+}
+export const CSS_MAPA = `.rotulo-raio span{display:inline-block;transform:translate(-50%,-50%);background:#fff;border:1.5px solid;border-radius:999px;padding:1px 7px;font:600 11px system-ui;white-space:nowrap}
+.pino-loja{font-size:22px;line-height:30px;text-align:center;background:#fff;border-radius:50%;box-shadow:0 1px 4px #0005}
+.pino-cliente{font-size:30px;line-height:30px;text-align:center;filter:drop-shadow(0 2px 2px #0006)}`;
+
+// ---------- Pedido agendado / cardápio do dia ----------
+/** Dia da semana (0 = domingo) no horário de Brasília. */
+export function diaBR(d = new Date()) {
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", weekday: "short" }).format(d));
+}
+/** O produto aparece nesse dia da semana? (vazio = todos os dias) */
+export const doDia = (p, dia) => !p.dias_semana?.length || p.dias_semana.includes(dia);
+/**
+ * Horários para agendar, de 30 em 30 min, dentro do funcionamento, de hoje até `dias` dias.
+ * Devolve [{ dia: "2026-11-26", rotulo: "Amanhã · qui 26/11", dow, horas: [{ iso, hora: "11:30" }] }]
+ */
+export function horariosParaAgendar(horarios, dias = 2, agora = new Date(), antecedenciaMin = 30) {
+  const parte = (d) => Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" })
+    .formatToParts(d).filter((x) => x.type !== "literal").map((x) => [x.type, x.value]));
+  const limite = agora.getTime() + antecedenciaMin * 60000;
+  const saida = [];
+  for (let k = 0; k <= dias; k++) {
+    const base = new Date(agora.getTime() + k * 86400000), p = parte(base), ymd = `${p.year}-${p.month}-${p.day}`;
+    const dow = diaBR(new Date(`${ymd}T12:00:00-03:00`));
+    const faixas = horarios?.length ? horarios.filter((h) => h.dia_semana === dow).map((h) => [hhmm(h.abre), hhmm(h.fecha)]) : [["08:00", "22:00"]];
+    const horas = [];
+    for (const [abre, fecha] of faixas) {
+      const [ah, am] = abre.split(":").map(Number), [fh, fm] = fecha.split(":").map(Number);
+      let ini = ah * 60 + am, fim = fh * 60 + fm; if (fim <= ini) fim = 24 * 60; // passa da meia-noite: até 23:30
+      for (let t = Math.ceil(ini / 30) * 30; t < fim; t += 30) {
+        const hora = `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+        const iso = new Date(`${ymd}T${hora}:00-03:00`).toISOString();
+        if (new Date(iso).getTime() >= limite && !horas.some((x) => x.iso === iso)) horas.push({ iso, hora });
+      }
+    }
+    horas.sort((a, b) => a.iso.localeCompare(b.iso));
+    if (horas.length) saida.push({ dia: ymd, dow, horas, rotulo: `${k === 0 ? "Hoje · " : k === 1 ? "Amanhã · " : ""}${DIAS[dow].slice(0, 3).toLowerCase()} ${p.day}/${p.month}` });
+  }
+  return saida;
+}
+export const textoAgendado = (iso) => { const d = new Date(iso);
+  return `${DIAS[diaBR(d)].slice(0, 3).toLowerCase()} ${d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit" })} às ${d.toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" })}`; };

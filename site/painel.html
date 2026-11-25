@@ -152,6 +152,21 @@
   .chips { display: flex; gap: .35rem; flex-wrap: wrap; margin: .7rem 0; }
   .chips button { border: 1px solid var(--linha); background: #fff; border-radius: 99px; padding: .35rem .75rem; font-weight: 600; font-size: .8rem; }
   .chips button.ativo { background: var(--cor); color: #fff; border-color: var(--cor); }
+  .dias-prod { display: flex; gap: .35rem; flex-wrap: wrap; }
+  .chip-dia { display: inline-flex; align-items: center; gap: .25rem; border: 1px solid var(--linha); border-radius: 99px; padding: .3rem .65rem; font-size: .82rem; font-weight: 600; cursor: pointer; }
+  .chip-dia:has(input:checked) { background: var(--cor); color: #fff; border-color: var(--cor); }
+  .chip-dia input { display: none; }
+  .badge-agenda { background: #ede9fe; color: #5b21b6; border-radius: 6px; padding: .1rem .45rem; font-size: .78rem; font-weight: 700; }
+  .barra-h { display: flex; align-items: center; gap: .5rem; font-size: .85rem; margin: .2rem 0; }
+  .barra-h .nome { width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .barra-h .trilho { flex: 1; background: #f1f5f9; border-radius: 6px; height: 18px; position: relative; }
+  .barra-h .enche { background: var(--cor); height: 100%; border-radius: 6px; min-width: 2px; }
+  .barra-h .val { width: 120px; text-align: right; font-variant-numeric: tabular-nums; }
+  .colunas-hora { display: flex; align-items: flex-end; gap: 4px; height: 160px; padding-top: 1rem; }
+  .colunas-hora div { flex: 1; background: var(--cor); border-radius: 4px 4px 0 0; position: relative; min-height: 2px; }
+  .colunas-hora div span { position: absolute; top: -1.1rem; left: 50%; transform: translateX(-50%); font-size: .7rem; font-weight: 700; }
+  .rotulos-hora { display: flex; gap: 4px; font-size: .7rem; color: var(--muted, #64748b); }
+  .rotulos-hora span { flex: 1; text-align: center; }
   .grade-prod { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; }
   .grade-prod button { background: #fff; border: 1px solid var(--linha); border-radius: 12px; padding: .5rem; text-align: left; }
   .grade-prod button:hover { border-color: var(--cor); }
@@ -296,6 +311,7 @@ code{background:#f4f4f5;padding:0 .3rem;border-radius:4px;font-size:.85em}
       <button data-aba="pdv">🧾 Lançar pedido</button>
       <div class="grupo-t">Gestão</div>
       <button data-aba="financeiro">📊 Financeiro</button>
+      <button data-aba="vendidos">📈 Mais vendidos</button>
       <button data-aba="clientes">👥 Clientes</button>
       <button data-aba="entregadores">🛵 Entregadores</button>
       <button data-aba="avaliacoes">⭐ Avaliações</button>
@@ -305,6 +321,7 @@ code{background:#f4f4f5;padding:0 .3rem;border-radius:4px;font-size:.85em}
       <button data-aba="entrega">📍 Entrega e horários</button>
       <button data-aba="mesas">🍽️ Mesas (QR Code)</button>
       <button data-aba="whatsapp">💬 WhatsApp automático</button>
+      <button data-aba="apps">🔌 Apps de delivery</button>
       <button data-aba="loja">⚙️ Loja</button>
     </nav>
     <div class="rodape-l">

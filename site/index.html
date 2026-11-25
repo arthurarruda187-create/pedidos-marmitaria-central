@@ -177,10 +177,13 @@
 <div id="modais"></div>
 
 <script type="module">
-import { sb, SUPABASE_URL, SUPABASE_ANON_KEY, brl, esc, $, NOMES_PAGAMENTO, textoPedido, precoEfetivo, precoAPartir, proximaAbertura, textoHorarios, taxaDoBairro, carregarRuas, buscarRuas } from "./comum.js";
+import { sb, SUPABASE_URL, SUPABASE_ANON_KEY, brl, esc, $, NOMES_PAGAMENTO, textoPedido, precoEfetivo, precoAPartir, proximaAbertura, textoHorarios, taxaDoBairro, carregarRuas, buscarRuas, taxaPorFaixa, kmLinhaReta, carregarLeaflet, desenharRaios, CSS_MAPA, diaBR, doDia, horariosParaAgendar, textoAgendado } from "./comum.js";
 import { ligarBotaoInstalar } from "./app.js";
 
 let loja = null, aberta = false, horarios = [], bairros = [], categorias = [], produtos = [], grupos = [], opcoes = [];
+let todosProdutos = [], diaMenu = 0; // cardápio do dia: produtos = só os do dia mostrado
+const podeAgendar = () => !!loja?.aceita_agendamento && !(MESA && loja.aceita_mesa);
+const podePedir = () => aberta || (podeAgendar() && horariosParaAgendar(horarios, loja.agendar_dias).length > 0);
 let carrinho = ler("carrinho", []);
 let filtro = "";
 // Pedido na mesa: o QR Code abre o cardápio com ?mesa=N
@@ -202,8 +205,12 @@ const descontoPct = (p) => { const ef = precoEfetivo(p); return ef < Number(p.pr
 
 function aplicar(d) {
   loja = d.loja; aberta = !!d.aberta; horarios = d.horarios; bairros = d.bairros;
-  categorias = d.categorias; produtos = d.produtos; grupos = d.grupos; opcoes = d.opcoes;
-  carrinho = carrinho.filter((i) => produtos.some((x) => x.id === i.produto_id && !x.esgotado));
+  categorias = d.categorias; todosProdutos = d.produtos; grupos = d.grupos; opcoes = d.opcoes;
+  // fechada mas aceita agendamento: mostra o cardápio do próximo dia de funcionamento
+  diaMenu = diaBR();
+  if (!aberta && loja.aceita_agendamento) { const prox = horariosParaAgendar(horarios, loja.agendar_dias)[0]; if (prox) diaMenu = prox.dow; }
+  produtos = todosProdutos.filter((p) => doDia(p, diaMenu));
+  carrinho = carrinho.filter((i) => todosProdutos.some((x) => x.id === i.produto_id && !x.esgotado));
   document.title = loja.nome;
   document.documentElement.style.setProperty("--cor", loja.cor || "#e4002b");
   document.querySelector("meta[name=theme-color]").content = loja.cor || "#e4002b";
@@ -253,6 +260,10 @@ const bgAttr = (url) => url ? `data-bg="${esc(url)}"` : "";
 
 function infoTaxa() {
   if (!loja.aceita_entrega) return "Só retirada";
+  if (loja.modo_taxa === "mapa" && (loja.faixas_km || []).length) {
+    const min = Math.min(...loja.faixas_km.map((f) => Number(f.taxa)));
+    return min === 0 ? "Entrega a partir de grátis" : `Entrega a partir de ${brl(min)}`;
+  }
   if (bairros.length) {
     const ts = bairros.map((b) => taxaDoBairro(loja, b)).filter((t) => t != null);
     if (!ts.length) return "Entrega";
@@ -285,7 +296,7 @@ function desenhar() {
         <button class="instalar oculto" id="btnInstalar">📲 Instalar app</button>
       </div>
     </div>
-    ${!aberta ? `<div class="aviso">${esc(loja.mensagem_fechada || "Estamos fechados no momento.")} Você pode olhar o cardápio à vontade.</div>` : ""}
+    ${!aberta ? `<div class="aviso">${esc(loja.mensagem_fechada || "Estamos fechados no momento.")} ${podePedir() ? `<b>Você já pode agendar seu pedido</b> — mostrando o cardápio de ${esc(["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"][diaMenu])}.` : "Você pode olhar o cardápio à vontade."}</div>` : ""}
     <div class="barra-fixa">
       <div class="busca"><label><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <input id="busca" type="search" placeholder="Buscar no cardápio" value="${esc(filtro)}"></label></div>
@@ -366,11 +377,11 @@ function abrirInfo() {
 
 function blocoTaxas() {
   const fx = [...(loja.faixas_km || [])].sort((a, b) => a.ate - b.ate);
-  if ((loja.modo_taxa === "raio" || bairros.length > 25) && fx.length) {
+  if ((loja.modo_taxa === "raio" || loja.modo_taxa === "mapa" || bairros.length > 25) && fx.length) {
     let de = 0;
     return `<div class="bloco"><h3>Taxas de entrega (distância da loja)</h3><table class="tabela-h">${fx.map((f) => {
       const t = `<tr><td>${de ? "de " + String(de).replace(".", ",") + " " : ""}até ${String(f.ate).replace(".", ",")} km</td><td>${Number(f.taxa) ? brl(f.taxa) : "Grátis"}</td></tr>`; de = f.ate; return t; }).join("")}</table>
-      <p class="muted" style="margin:.4rem 0 0;font-size:.85rem">Escolha seu bairro na sacola para ver a taxa exata.</p></div>`;
+      <p class="muted" style="margin:.4rem 0 0;font-size:.85rem">${loja.modo_taxa === "mapa" ? "Distância em linha reta. Na sacola você marca sua casa no mapa e vê a taxa exata." : "Escolha seu bairro na sacola para ver a taxa exata."}</p></div>`;
   }
   if (!bairros.length) return "";
   return `<div class="bloco"><h3>Taxas de entrega</h3><table class="tabela-h">${bairros.map((b) => { const t = taxaDoBairro(loja, b);
@@ -380,7 +391,7 @@ function blocoTaxas() {
 // ---------- Pedir de novo ----------
 function itensValidos(itens) {
   return (itens || []).filter((i) => {
-    const p = produtos.find((x) => x.id === i.produto_id && !x.esgotado);
+    const p = produtos.find((x) => x.id === i.produto_id && !x.esgotado); // só o que está no cardápio do dia
     if (!p) return false;
     return (i.adicionais || []).every((a) => opcoes.some((o) => o.id === a.opcao_id && !o.esgotado && grupos.some((g) => g.id === o.grupo_id && g.produto_id === p.id)));
   });
@@ -419,10 +430,12 @@ function abrirProduto(id, depois) {
       </div>`).join("")}
       <label class="rotulo">Alguma observação?</label>
       <textarea class="campo" id="obsItem" rows="2" maxlength="200" placeholder="Ex.: tirar a cebola, ponto da carne…"></textarea>
+      <label class="rotulo">Para quem é? <span class="muted">(opcional — sai na etiqueta, bom para pedidos de empresa)</span></label>
+      <input class="campo" id="paraItem" maxlength="40" placeholder="Ex.: João">
       <div class="erro" id="erroItem"></div>
     </div>`,
     `<div class="qtd" id="qtdItem"><button data-d="-1">−</button><span>1</span><button data-d="1">+</button></div>
-     <button class="btn" id="addItem" ${aberta ? "" : "disabled"}><span>${aberta ? "Adicionar" : "Loja fechada"}</span><span id="precoItem"></span></button>`);
+     <button class="btn" id="addItem" ${podePedir() ? "" : "disabled"}><span>${podePedir() ? "Adicionar" : "Loja fechada"}</span><span id="precoItem"></span></button>`);
 
   const soma = (gid) => opcoes.filter((o) => o.grupo_id === gid).reduce((s, o) => s + (escolha[o.id] || 0), 0);
   const unit = () => precoEfetivo(p) + opcoes.reduce((s, o) => s + (escolha[o.id] || 0) * Number(o.preco), 0);
@@ -458,7 +471,7 @@ function abrirProduto(id, depois) {
       return;
     }
     carrinho.push({ chave: Date.now() + "-" + Math.random().toString(36).slice(2), produto_id: p.id, quantidade: qtd,
-      observacao: $("#obsItem", m).value.trim(), adicionais: Object.entries(escolha).map(([opcao_id, quantidade]) => ({ opcao_id, quantidade })) });
+      observacao: $("#obsItem", m).value.trim(), para: $("#paraItem", m).value.trim(), adicionais: Object.entries(escolha).map(([opcao_id, quantidade]) => ({ opcao_id, quantidade })) });
     salvarCarrinho();
     m.remove();
     if (depois) depois();
@@ -468,7 +481,7 @@ function abrirProduto(id, depois) {
 
 // ---------- Sacola ----------
 function linhaItem(i) {
-  const p = produtos.find((x) => x.id === i.produto_id);
+  const p = todosProdutos.find((x) => x.id === i.produto_id);
   const ads = i.adicionais.map((a) => ({ ...a, o: opcoes.find((o) => o.id === a.opcao_id) })).filter((a) => a.o);
   const unit = precoEfetivo(p) + ads.reduce((s, a) => s + a.quantidade * Number(a.o.preco), 0);
   return { p, ads, total: unit * i.quantidade };
@@ -497,6 +510,8 @@ function abrirSacola() {
   if (naMesa) formas.splice(0, formas.length, ...formasMesa);
   const tipos = naMesa ? ["mesa"] : [loja.aceita_entrega && "entrega", loja.aceita_retirada && "retirada"].filter(Boolean);
   const salvo = ler("cliente", {});
+  const modoMapa = loja.modo_taxa === "mapa" && loja.lat != null && (loja.faixas_km || []).length > 0;
+  let ponto = salvo.ponto || null, pinoManual = !!salvo.ponto; // {lat,lng} marcado no mapa
   let tipo = tipos.includes(salvo.tipo) ? salvo.tipo : tipos[0];
   const muitos = bairros.length > 12;
   const opcoesBairro = (termo = "") => {
@@ -505,6 +520,7 @@ function abrirSacola() {
     return `<option value="">${t ? "Resultados da busca" : "Escolha seu bairro"}</option>` + bairros
       .filter((b) => !t || b.nome.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").includes(t))
       .map((b) => { const tx = taxaDoBairro(loja, b);
+        if (loja.modo_taxa === "mapa") return `<option value="${b.id}" ${atual === b.id ? "selected" : ""}>${esc(b.nome)}</option>`;
         return `<option value="${b.id}" ${atual === b.id ? "selected" : ""} ${tx == null ? "disabled" : ""}>${esc(b.nome)} — ${tx == null ? "fora da área" : tx ? brl(tx) : "grátis"}</option>`; }).join("");
   };
   let cupom = null; // {codigo,tipo,valor}
@@ -524,13 +540,28 @@ function abrirSacola() {
         <div class="grade-end"><div><label class="rotulo">Número</label><input class="campo" id="cNum" inputmode="numeric" maxlength="10" value="${esc(salvo.num || "")}" placeholder="ou s/n"></div>
           <div><label class="rotulo">Complemento / referência</label><input class="campo" id="cCompl" maxlength="120" value="${esc(salvo.compl || "")}" placeholder="apto, casa dos fundos…"></div></div>
         ${bairros.length ? `<label class="rotulo">Bairro <span class="muted" id="bairroAuto"></span></label>${muitos ? `<input class="campo" id="buscaBairro" placeholder="🔎 Digite para achar seu bairro" style="margin-bottom:.4rem">` : ""}<select class="campo" id="cBairro">${opcoesBairro()}</select>` : ""}
+        ${modoMapa ? `<label class="rotulo">📍 Confirme no mapa onde entregar</label>
+          <div id="mapaCli" style="height:250px;border-radius:12px;border:1px solid #ddd;background:#eef"></div>
+          <div style="display:flex;justify-content:space-between;gap:.5rem;align-items:center;margin-top:.35rem;flex-wrap:wrap">
+            <span class="muted" id="mapaCliInfo" style="font-size:.88rem">Arraste o pino 📍 até a sua casa</span>
+            <button type="button" class="link-info" id="minhaLoc" style="margin:0">📡 Usar minha localização</button></div>` : ""}
       </div>
       ${loja.endereco && !naMesa ? `<p class="muted" id="endLoja" style="margin:.6rem 0 0">Retire em: ${esc(loja.endereco)}</p>` : ""}
     </div>
 
+    ${podeAgendar() ? `<div class="bloco"><h3>Quando?</h3>
+      <div class="segmento">${aberta ? `<button data-quando="agora">⚡ O quanto antes</button>` : ""}<button data-quando="agendar">📅 Agendar</button></div>
+      <div id="blocoAgenda" class="oculto"><div class="grade-end">
+        <div><label class="rotulo">Dia</label><select class="campo" id="agDia"></select></div>
+        <div><label class="rotulo">Horário</label><select class="campo" id="agHora"></select></div></div>
+        <div class="erro" id="agAviso" style="margin-top:.4rem"></div></div></div>` : ""}
+
     <div class="bloco"><h3>Seus dados</h3>
       <label class="rotulo" style="margin-top:0">Nome</label><input class="campo" id="cNome" autocomplete="name" maxlength="80" value="${esc(salvo.nome || "")}">
       <label class="rotulo">WhatsApp${naMesa ? ` <span class="muted">(opcional)</span>` : ""}</label><input class="campo" id="cTel" type="tel" inputmode="tel" autocomplete="tel" maxlength="20" value="${esc(salvo.tel || "")}" placeholder="(43) 99999-9999">
+      ${naMesa ? "" : `<details ${salvo.empresa ? "open" : ""} style="margin-top:.6rem"><summary class="muted" style="cursor:pointer;font-size:.9rem">🏢 É pedido para uma empresa?</summary>
+        <label class="rotulo">Nome da empresa</label><input class="campo" id="cEmpresa" maxlength="80" value="${esc(salvo.empresa || "")}" placeholder="Ex.: Escritório Contábil Silva">
+        <p class="muted" style="font-size:.82rem;margin:.3rem 0 0">Dica: no produto, preencha "Para quem é?" que cada marmita sai com o nome na etiqueta.</p></details>`}
     </div>
 
     <div class="bloco"><h3>Pagamento</h3>
@@ -549,11 +580,29 @@ function abrirSacola() {
 
     <div class="bloco resumo" id="resumo"></div>
     <div class="erro" id="erroPedido"></div>
-  </div>`, `<button class="btn" id="enviarPedido" ${aberta ? "" : "disabled"}><span>${aberta ? "Fazer pedido" : "Loja fechada"}</span><span id="totalBtn"></span></button>`);
+  </div>`, `<button class="btn" id="enviarPedido" ${podePedir() ? "" : "disabled"}><span>${podePedir() ? (aberta ? "Fazer pedido" : "Agendar pedido") : "Loja fechada"}</span><span id="totalBtn"></span></button>`);
 
   const pag = () => m.querySelector("input[name=pag]:checked")?.value;
+  // ---------- quando (agora ou agendado) ----------
+  let quando = aberta ? "agora" : "agendar";
+  const vagas = podeAgendar() ? horariosParaAgendar(horarios, loja.agendar_dias) : [];
+  const diaEscolhido = () => vagas.find((v) => v.dia === $("#agDia", m)?.value);
+  const slotEscolhido = () => quando === "agendar" ? $("#agHora", m)?.value || null : null;
+  const diaDoPedido = () => quando === "agendar" && diaEscolhido() ? diaEscolhido().dow : diaBR();
+  const foraDoDia = () => carrinho.map((i) => todosProdutos.find((x) => x.id === i.produto_id)).filter((p) => p && !doDia(p, diaDoPedido()));
+  const NOMES_DIA = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+  const montarAgenda = () => {
+    if (!$("#agDia", m)) return;
+    m.querySelectorAll("[data-quando]").forEach((b) => b.classList.toggle("ativo", b.dataset.quando === quando));
+    $("#blocoAgenda", m).classList.toggle("oculto", quando !== "agendar");
+    const fora = foraDoDia();
+    $("#agAviso", m).textContent = fora.length ? `${fora.map((p) => p.nome).join(", ")} não ${fora.length > 1 ? "estão" : "está"} no cardápio de ${NOMES_DIA[diaDoPedido()]}. Tire da sacola ou escolha outro dia.` : "";
+  };
+  const preencherHoras = () => { const v = diaEscolhido(); $("#agHora", m).innerHTML = (v?.horas || []).map((h) => `<option value="${h.iso}">${h.hora}</option>`).join(""); };
   const bairroSel = () => bairros.find((b) => b.id === $("#cBairro", m)?.value);
-  const taxa = () => tipo !== "entrega" ? 0 : bairros.length ? (bairroSel() ? taxaDoBairro(loja, bairroSel()) ?? 0 : 0) : Number(loja.taxa_entrega);
+  const kmPonto = () => ponto ? kmLinhaReta(loja.lat, loja.lng, ponto.lat, ponto.lng) : null;
+  const taxaMapa = () => ponto ? taxaPorFaixa(kmPonto(), loja.faixas_km) : null; // null = sem ponto ou fora
+  const taxa = () => tipo !== "entrega" ? 0 : modoMapa ? (taxaMapa() ?? 0) : bairros.length ? (bairroSel() ? taxaDoBairro(loja, bairroSel()) ?? 0 : 0) : Number(loja.taxa_entrega);
   const desconto = () => {
     if (!cupom) return 0;
     const sub = subtotal();
@@ -568,7 +617,7 @@ function abrirSacola() {
       const { p, ads, total } = linhaItem(i);
       return `<div class="item-sacola"><div class="n"><b>${esc(p.nome)}</b>
         ${ads.map((a) => `<small>+ ${a.quantidade > 1 ? a.quantidade + "x " : ""}${esc(a.o.nome)}</small>`).join("")}
-        ${i.observacao ? `<small>“${esc(i.observacao)}”</small>` : ""}<div style="font-weight:700;margin-top:.2rem">${brl(total)}</div></div>
+        ${i.observacao ? `<small>“${esc(i.observacao)}”</small>` : ""}${i.para ? `<small>👤 ${esc(i.para)}</small>` : ""}<div style="font-weight:700;margin-top:.2rem">${brl(total)}</div></div>
         <div class="qtd" data-chave="${i.chave}"><button data-d="-1">${i.quantidade === 1 ? "🗑" : "−"}</button><span>${i.quantidade}</span><button data-d="1">+</button></div></div>`;
     }).join("");
     m.querySelectorAll("#itens .qtd button").forEach((b) => b.onclick = () => {
@@ -590,17 +639,78 @@ function abrirSacola() {
     $("#blocoTroco", m).classList.toggle("oculto", pag() !== "dinheiro");
     $("#blocoEmail", m).classList.toggle("oculto", pag() !== "pix_online");
     const sub = subtotal(), tx = taxa(), ds = desconto(), tot = sub + tx - ds;
-    const faltaBairro = tipo === "entrega" && bairros.length && !bairroSel();
+    const faltaBairro = tipo === "entrega" && bairros.length && !bairroSel() && !modoMapa;
     const minimo = tipo === "entrega" && sub < Number(loja.pedido_minimo);
-    const km = tipo === "entrega" && bairroSel()?.distancia_km;
+    const km = tipo === "entrega" && (modoMapa ? kmPonto() : bairroSel()?.distancia_km);
+    const textoTaxa = modoMapa ? (!ponto ? "marque no mapa" : taxaMapa() == null ? "fora da área" : tx ? brl(tx) : "Grátis") : faltaBairro ? "escolha o bairro" : tx ? brl(tx) : "Grátis";
     $("#resumo", m).innerHTML = `<div><span>Subtotal</span><span>${brl(sub)}</span></div>
-      ${tipo === "entrega" ? `<div><span>Taxa de entrega${km ? ` <small class="muted">(${String(Number(km).toFixed(1)).replace(".", ",")} km)</small>` : ""}</span><span>${faltaBairro ? "escolha o bairro" : tx ? brl(tx) : "Grátis"}</span></div>` : ""}
+      ${tipo === "entrega" ? `<div><span>Taxa de entrega${km ? ` <small class="muted">(${String(Number(km).toFixed(1)).replace(".", ",")} km)</small>` : ""}</span><span>${textoTaxa}</span></div>` : ""}
       ${ds ? `<div class="desc"><span>Desconto (${esc(cupom.codigo)})</span><span>−${brl(ds)}</span></div>` : ""}
       <div class="total"><span>Total</span><span>${brl(tot)}</span></div>
       ${minimo ? `<div class="muted" style="font-size:.85rem">Pedido mínimo para entrega: ${brl(loja.pedido_minimo)}</div>` : ""}`;
     $("#totalBtn", m).textContent = brl(tot);
+    if (modoMapa && tipo === "entrega") iniciarMapa();
+    montarAgenda();
   };
+
+  // ---------- mapa da entrega (igual ao aiqfome: a taxa sai do ponto marcado) ----------
+  let mapaCli = null, pino = null, L = null;
+  const infoMapa = () => {
+    const el = $("#mapaCliInfo", m); if (!el) return;
+    if (!ponto) { el.innerHTML = "Arraste o pino 📍 até a sua casa"; return; }
+    const km = kmPonto(), t = taxaMapa(), max = Math.max(...loja.faixas_km.map((f) => Number(f.ate)));
+    el.innerHTML = t == null ? `<b style="color:#dc2626">Fora da área</b> — ${String(km.toFixed(1)).replace(".", ",")} km (entregamos até ${String(max).replace(".", ",")} km)`
+      : `${String(km.toFixed(1)).replace(".", ",")} km da loja · entrega <b>${t ? brl(t) : "grátis"}</b>`;
+  };
+  const moverPino = (lat, lng, manual) => {
+    ponto = { lat, lng }; if (manual) pinoManual = true;
+    if (mapaCli) { if (!pino) criarPino(); pino.setLatLng([lat, lng]); mapaCli.setView([lat, lng], Math.max(mapaCli.getZoom(), 16)); }
+    infoMapa(); redesenhar();
+  };
+  const criarPino = () => {
+    const c = ponto || { lat: loja.lat, lng: loja.lng };
+    pino = L.marker([c.lat, c.lng], { draggable: true, icon: L.divIcon({ className: "pino-cliente", html: "📍", iconSize: [30, 30], iconAnchor: [15, 28] }) }).addTo(mapaCli);
+    pino.on("dragend", () => { const p = pino.getLatLng(); moverPino(p.lat, p.lng, true); });
+  };
+  async function iniciarMapa() {
+    const el = $("#mapaCli", m); if (!el) return;
+    if (mapaCli) { setTimeout(() => mapaCli.invalidateSize(), 50); return; }
+    try { L = await carregarLeaflet(); } catch { el.innerHTML = `<p class="muted" style="padding:1rem">Não consegui abrir o mapa. Verifique a internet.</p>`; return; }
+    if (mapaCli || !document.body.contains(el)) return;
+    if (!document.getElementById("cssMapa")) { const st = document.createElement("style"); st.id = "cssMapa"; st.textContent = CSS_MAPA; document.head.appendChild(st); }
+    const c = ponto || (bairroSel()?.lat != null ? { lat: bairroSel().lat, lng: bairroSel().lng } : { lat: loja.lat, lng: loja.lng });
+    mapaCli = L.map(el, { zoomControl: true, attributionControl: false }).setView([c.lat, c.lng], ponto ? 17 : 15);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(mapaCli);
+    desenharRaios(L, mapaCli, loja, loja.faixas_km, { rotulos: false });
+    criarPino();
+    if (!ponto) pino.setLatLng([c.lat, c.lng]);
+    mapaCli.on("click", (e) => moverPino(e.latlng.lat, e.latlng.lng, true));
+    infoMapa();
+    if (!ponto) localizarRua();
+  }
+  // procura a rua + número no mapa e leva o pino até lá (se o cliente ainda não mexeu no pino)
+  let ultimaBusca = "";
+  async function localizarRua() {
+    if (!modoMapa || pinoManual) return;
+    const rua = $("#cRua", m).value.trim(), num = $("#cNum", m).value.trim();
+    if (!rua) return;
+    const cidade = (loja.endereco_origem || "").split(",").slice(-1)[0].replace(/-\s*[A-Z]{2}\s*$/, "").trim() || "Apucarana";
+    const q = `${rua}${/^\d+$/.test(num) ? ", " + num : ""}, ${cidade}, Paraná`;
+    if (q === ultimaBusca) return; ultimaBusca = q;
+    try {
+      const r = await fetch("https://nominatim.openstreetmap.org/search?" + new URLSearchParams({ format: "json", limit: "1", countrycodes: "br", q }));
+      const [x] = await r.json();
+      if (x && !pinoManual) { const lat = Number(x.lat), lng = Number(x.lon); if (kmLinhaReta(loja.lat, loja.lng, lat, lng) < 40) moverPino(lat, lng, false); }
+    } catch { /* sem mapa: o cliente arrasta o pino */ }
+  }
   m.querySelectorAll("[data-tipo]").forEach((b) => b.onclick = () => { tipo = b.dataset.tipo; redesenhar(); });
+  if ($("#agDia", m)) {
+    $("#agDia", m).innerHTML = vagas.map((v) => `<option value="${v.dia}">${v.rotulo}</option>`).join("");
+    preencherHoras();
+    $("#agDia", m).onchange = () => { preencherHoras(); montarAgenda(); };
+    m.querySelectorAll("[data-quando]").forEach((b) => b.onclick = () => { quando = b.dataset.quando; montarAgenda(); });
+    montarAgenda();
+  }
   m.querySelectorAll("input[name=pag]").forEach((r) => r.onchange = redesenhar);
   $("#cBairro", m)?.addEventListener("change", redesenhar);
   $("#buscaBairro", m)?.addEventListener("input", (e) => {
@@ -632,6 +742,15 @@ function abrirSacola() {
     });
   });
   $("#cRua", m).addEventListener("blur", () => setTimeout(() => listaRua.classList.remove("aberta"), 200));
+  $("#cNum", m).addEventListener("change", () => { pinoManual = false; localizarRua(); });
+  $("#cRua", m).addEventListener("change", () => { pinoManual = false; localizarRua(); });
+  $("#minhaLoc", m)?.addEventListener("click", () => {
+    if (!navigator.geolocation) return;
+    $("#mapaCliInfo", m).textContent = "Buscando sua localização…";
+    navigator.geolocation.getCurrentPosition((g) => moverPino(g.coords.latitude, g.coords.longitude, true),
+      () => { $("#mapaCliInfo", m).textContent = "Não deu para pegar a localização. Arraste o pino."; }, { enableHighAccuracy: true, timeout: 10000 });
+  });
+  $("#cBairro", m)?.addEventListener("change", () => { const b = bairroSel(); if (modoMapa && !pinoManual && b?.lat != null) moverPino(b.lat, b.lng, false); });
   $("#addMais", m).onclick = () => m.remove();
   $("#aplicarCupom", m).onclick = async () => {
     const codigo = $("#cCupom", m).value.trim();
@@ -652,12 +771,26 @@ function abrirSacola() {
       cliente_nome: $("#cNome", m).value, cliente_telefone: $("#cTel", m).value, cliente_email: $("#cEmail", m).value,
       tipo, mesa: naMesa ? MESA : undefined, endereco: [$("#cRua", m).value.trim(), $("#cNum", m).value.trim()].filter(Boolean).join(", ") + ($("#cCompl", m).value.trim() ? " - " + $("#cCompl", m).value.trim() : ""), bairro_id: $("#cBairro", m)?.value || null, observacao: $("#cObs", m).value,
       pagamento: pag(), troco_para: $("#cTroco", m).value || null, cupom: cupom?.codigo || null,
-      itens: carrinho.map(({ produto_id, quantidade, observacao, adicionais }) => ({ produto_id, quantidade, observacao, adicionais })),
+      itens: carrinho.map(({ produto_id, quantidade, observacao, adicionais, para }) => ({ produto_id, quantidade, observacao, adicionais, para })),
+      empresa: $("#cEmpresa", m)?.value.trim() || undefined,
     };
     if (!dados.pagamento) { erro.textContent = "Escolha a forma de pagamento."; return; }
+    if (quando === "agendar") {
+      if (!slotEscolhido()) { erro.textContent = "Escolha o dia e o horário do agendamento."; return; }
+      if (foraDoDia().length) { erro.textContent = $("#agAviso", m).textContent; return; }
+      dados.agendado_para = slotEscolhido();
+    } else if (!aberta) { erro.textContent = "A loja está fechada agora. Escolha um horário para agendar."; return; }
     if (tipo === "entrega" && !$("#cRua", m).value.trim()) { erro.textContent = "Informe a rua da entrega."; $("#cRua", m).focus(); return; }
     if (tipo === "entrega" && !$("#cNum", m).value.trim()) { erro.textContent = "Informe o número da casa (ou s/n)."; $("#cNum", m).focus(); return; }
-    gravar("cliente", { ...salvo, nome: dados.cliente_nome, tel: dados.cliente_telefone || salvo.tel, ...(naMesa ? {} : { end: dados.endereco, rua: $("#cRua", m).value.trim(), num: $("#cNum", m).value.trim(), compl: $("#cCompl", m).value.trim(), email: dados.cliente_email, bairro_id: dados.bairro_id, tipo, pag: dados.pagamento }) });
+    if (tipo === "entrega" && modoMapa) {
+      if (!ponto) { erro.textContent = "Marque no mapa o local da entrega."; $("#mapaCli", m)?.scrollIntoView({ block: "center" }); return; }
+      if (taxaMapa() == null) { erro.textContent = "Esse local fica fora da nossa área de entrega."; return; }
+      dados.entrega_lat = ponto.lat; dados.entrega_lng = ponto.lng;
+    }
+    gravar("cliente", { ...salvo, nome: dados.cliente_nome, tel: dados.cliente_telefone || salvo.tel, ...(naMesa ? {} : { end: dados.endereco, rua: $("#cRua", m).value.trim(), num: $("#cNum", m).value.trim(), compl: $("#cCompl", m).value.trim(), email: dados.cliente_email, bairro_id: dados.bairro_id, tipo, pag: dados.pagamento, ponto: modoMapa ? ponto : salvo.ponto, empresa: dados.empresa || "" }) });
+    // mesma chave enquanto o cliente tenta de novo: se o 1º envio chegou e a resposta se perdeu, não duplica
+    if (!window.__chaveEnvio || window.__chaveEnvioDe !== JSON.stringify(dados)) { window.__chaveEnvio = crypto.randomUUID(); window.__chaveEnvioDe = JSON.stringify(dados); }
+    dados.chave_envio = window.__chaveEnvio;
     btn.disabled = true; btn.firstElementChild.textContent = "Enviando…";
     try {
       const r = await fetch(`${SUPABASE_URL}/functions/v1/criar-pedido`, {
@@ -667,6 +800,7 @@ function abrirSacola() {
       });
       const res = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(res.erro || "Não foi possível enviar o pedido. Tente de novo.");
+      window.__chaveEnvio = null;
       gravar("repetir", { itens: dados.itens, em: Date.now() });
       carrinho = []; salvarCarrinho();
       gravar("ultimoPedido", res.id);
@@ -703,7 +837,11 @@ async function acompanhar(id) {
     $("#app").innerHTML = `<div class="acomp">
       <a href="./" style="color:var(--cor);font-weight:600;text-decoration:none">‹ ${esc(loja?.nome || "Cardápio")}</a>
       <div class="status-grande"><div class="icone">${ICONES[p.status] || "📋"}</div><h2>${esc(nomes[p.status])}</h2><p class="muted" style="margin:.3rem 0 0">Pedido #${p.numero}${p.mesa ? ` · Mesa ${esc(p.mesa)}` : ""}</p>
-        ${["novo", "preparo"].includes(p.status) && p.tipo !== "mesa" && loja ? `<p class="muted" style="margin:.4rem 0 0">⏱ Previsão: ${esc(p.tipo === "entrega" ? loja.tempo_entrega : loja.tempo_retirada)}</p>` : ""}</div>
+        ${p.agendado_para && !["entregue", "cancelado"].includes(p.status) ? `<p style="margin:.5rem 0 0;font-weight:700">📅 Agendado para ${esc(textoAgendado(p.agendado_para))}</p>`
+          : ["novo", "preparo"].includes(p.status) && p.tipo !== "mesa" && loja ? `<p class="muted" style="margin:.4rem 0 0">⏱ Previsão: ${esc(p.tipo === "entrega" ? loja.tempo_entrega : loja.tempo_retirada)}</p>` : ""}</div>
+      ${p.codigo_entrega ? `<div class="bloco" style="text-align:center;border:2px dashed var(--cor)"><div class="muted" style="font-size:.9rem">🔐 Código de entrega</div>
+        <div style="font:800 2.4rem ui-monospace,monospace;letter-spacing:.6rem;margin:.2rem 0 .1rem">${esc(p.codigo_entrega)}</div>
+        <div class="muted" style="font-size:.85rem">Fale este código para o entregador só quando receber o pedido.</div></div>` : ""}
       ${p.status === "entregue" ? blocoAvaliacao(p) : ""}
       ${p.status === "cancelado" ? `<p class="aviso" style="margin:1rem 0">Este pedido foi cancelado. Se tiver dúvidas, fale com a loja.</p>` : `
         <div class="linha-tempo">${passos.map((s, i) => { const k = ordem.indexOf(s); return `<div class="p ${k < idx ? "feito" : k === idx ? "atual" : ""}"><b>${k < idx ? "✓" : i + 1}</b>${nomes[s]}</div>`; }).join("")}</div>`}
@@ -734,7 +872,9 @@ async function acompanhar(id) {
 }
 
 function blocoAvaliacao(p) {
-  if (p.avaliado) return `<div class="bloco avaliar" style="text-align:center"><b>Obrigado pela avaliação!</b><div class="estrelas fixas">${"★".repeat(p.nota || 5)}${"☆".repeat(5 - (p.nota || 5))}</div></div>`;
+  if (p.avaliado) return `<div class="bloco avaliar" style="text-align:center"><b>Obrigado pela avaliação!</b><div class="estrelas fixas">${"★".repeat(p.nota || 5)}${"☆".repeat(5 - (p.nota || 5))}</div>
+    ${p.nota === 5 && loja?.link_avaliacao_google ? `<p style="margin:.6rem 0 .5rem">Que bom que você gostou! 😊 Pode deixar 5 estrelas pra gente no Google também? Ajuda muito a loja.</p>
+      <a class="btn centro" style="text-decoration:none;display:inline-flex;gap:.4rem" href="${esc(loja.link_avaliacao_google)}" target="_blank" rel="noopener">⭐ Avaliar no Google</a>` : ""}</div>`;
   return `<div class="bloco avaliar" id="avaliar" style="text-align:center"><b>Como foi o seu pedido?</b>
     <div class="estrelas" id="estrelas">${[1, 2, 3, 4, 5].map((n) => `<button data-nota="${n}" aria-label="${n} estrelas">☆</button>`).join("")}</div>
     <textarea class="campo" id="avComent" rows="2" maxlength="500" placeholder="Conte o que achou (opcional)"></textarea>
