@@ -23,7 +23,7 @@ export const PADRAO: Record<string, string> = {
   novo: "Olá, {nome}! 😊 Recebemos seu pedido *#{numero}* na *{loja}*.\nTotal: *{total}*\n{pix}Acompanhe aqui: {link}",
   preparo: "👨‍🍳 {nome}, seu pedido *#{numero}* foi aceito e já está sendo preparado! Previsão: {tempo}.",
   pronto: "✅ {nome}, seu pedido *#{numero}* está pronto! Pode vir buscar. 🏪",
-  saiu: "🛵 {nome}, seu pedido *#{numero}* saiu para entrega{entregador}! Já já chega aí.",
+  saiu: "🛵 {nome}, seu pedido *#{numero}* saiu para entrega{entregador}! Já já chega aí.{codigo}",
   entregue: "🎉 Pedido *#{numero}* entregue. Bom apetite, {nome}!\nConta pra gente como foi: {link}",
   cancelado: "❌ {nome}, seu pedido *#{numero}* foi cancelado.{motivo}\nQualquer dúvida, é só responder esta mensagem.",
 };
@@ -39,6 +39,7 @@ function montar(modelo: string, p: any, loja: any, ent: any) {
     nome: String(p.cliente_nome || "").split(" ")[0], numero: String(p.numero), loja: loja.nome, total: brl(p.total), link,
     tempo: p.tipo === "entrega" ? loja.tempo_entrega : loja.tempo_retirada,
     entregador: ent?.nome ? ` com ${ent.nome}` : "", motivo: p.motivo_cancelamento ? `\nMotivo: ${p.motivo_cancelamento}` : "", pix,
+    codigo: p.codigo_entrega ? `\n\n🔐 Código de entrega: *${p.codigo_entrega}*\nFale este código para o entregador só quando receber o pedido.` : "",
   };
   return modelo.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\n{3,}/g, "\n\n").trim();
 }
