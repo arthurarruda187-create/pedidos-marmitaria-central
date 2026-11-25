@@ -1,0 +1,8 @@
+project_id = "pedidos-loja"
+
+# As duas funções são chamadas sem login (cardápio público e aviso do Mercado Pago)
+[functions.criar-pedido]
+verify_jwt = false
+
+[functions.webhook-mercadopago]
+verify_jwt = false
