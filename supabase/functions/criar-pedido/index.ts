@@ -70,6 +70,13 @@ Deno.serve(async (req) => {
     return json({ erro: "Pedido inválido." }, 400);
   }
 
+  // mesmo envio repetido (clique duplo, internet caiu e o cliente tentou de novo): devolve o pedido já gravado
+  const chave = typeof (entrada as any).chave_envio === "string" ? (entrada as any).chave_envio.slice(0, 64) : null;
+  if (chave) {
+    const { data: ja } = await db.from("pedidos").select("id,numero,pix_copia_cola,pix_qr_base64,checkout_url").eq("chave_envio", chave).maybeSingle();
+    if (ja) return json({ id: ja.id, numero: ja.numero, pix_copia_cola: ja.pix_copia_cola, pix_qr_base64: ja.pix_qr_base64, checkout_url: ja.checkout_url });
+  }
+
   const balcao = entrada.canal === "balcao";
   if (balcao && !(await ehAdmin(req))) return json({ erro: "Somente a loja pode lançar pedido de balcão." }, 403);
 
@@ -79,7 +86,7 @@ Deno.serve(async (req) => {
     db.from("loja").select("*").eq("id", 1).single(),
     db.rpc("loja_aberta_agora"),
     db.from("bairros").select("id,nome,taxa,distancia_km").eq("ativo", true),
-    db.from("produtos").select("id,nome,preco,preco_promocional,esgotado,ativo").in("id", ids.length ? ids : semIds),
+    db.from("produtos").select("id,nome,preco,preco_promocional,esgotado,ativo,dias_semana").in("id", ids.length ? ids : semIds),
     db.from("grupos_adicionais").select("id,produto_id,nome,minimo,maximo").in("produto_id", ids.length ? ids : semIds),
   ]);
   const erroLeitura = lojaR.error ?? abertaR.error ?? bairrosR.error ?? prodR.error ?? grupR.error;
@@ -93,7 +100,12 @@ Deno.serve(async (req) => {
     : { data: [], error: null };
   if (opcR.error) return json({ erro: "Erro ao ler o cardápio. Tente de novo." }, 500);
 
-  const extras = { aberta: !!abertaR.data, bairros: bairrosR.data ?? [], balcao, cupom: null as Cupom | null };
+  let agendaNoHorario: boolean | undefined;
+  if (entrada.agendado_para && !isNaN(new Date(String(entrada.agendado_para)).getTime())) {
+    const { data: ok } = await db.rpc("loja_funciona_em", { p_quando: new Date(String(entrada.agendado_para)).toISOString() });
+    agendaNoHorario = !!ok;
+  }
+  const extras = { aberta: !!abertaR.data, bairros: bairrosR.data ?? [], balcao, cupom: null as Cupom | null, agendaNoHorario };
   let calc;
   try {
     calc = calcularPedido(entrada, lojaR.data, prodR.data ?? [], grupR.data ?? [], opcR.data ?? [], extras);
@@ -116,13 +128,24 @@ Deno.serve(async (req) => {
   const online = calc.registro.pagamento === "pix_online" || calc.registro.pagamento === "cartao_online";
   if (online && !MP_TOKEN) return json({ erro: "Pagamento online ainda não configurado na loja." }, 422);
 
-  const { data: pedido, error } = await db.from("pedidos").insert(calc.registro).select("id,numero,total").single();
+  // reserva o cupom antes de gravar (com várias pessoas ao mesmo tempo o limite não estoura)
+  const tel = calc.registro.cliente_telefone ?? "";
+  if (calc.registro.cupom_codigo) {
+    const { data: msg, error: eCup } = await db.rpc("reservar_cupom", { p_codigo: calc.registro.cupom_codigo, p_telefone: tel });
+    if (eCup) { console.error(eCup); return json({ erro: "Erro ao conferir o cupom. Tente de novo." }, 500); }
+    if (msg) return json({ erro: msg }, 422);
+  }
+  const { data: pedido, error } = await db.from("pedidos").insert({ ...calc.registro, chave_envio: chave }).select("id,numero,total").single();
   if (error) {
+    if (calc.registro.cupom_codigo) await db.rpc("liberar_cupom", { p_codigo: calc.registro.cupom_codigo, p_telefone: tel });
+    if (error.code === "23505" && chave && String(error.message).includes("chave_envio")) {
+      const { data: ja } = await db.from("pedidos").select("id,numero").eq("chave_envio", chave).maybeSingle();
+      if (ja) return json({ id: ja.id, numero: ja.numero });
+    }
     if (error.code === "23505") return json({ erro: "Este pedido do app já foi lançado (mesmo número)." }, 409);
     console.error(error);
     return json({ erro: "Não foi possível registrar o pedido." }, 500);
   }
-  if (calc.registro.cupom_codigo) await db.rpc("usar_cupom", { p_codigo: calc.registro.cupom_codigo });
 
   if (!online) return json({ id: pedido.id, numero: pedido.numero });
 
