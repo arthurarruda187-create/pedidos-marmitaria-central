@@ -17,9 +17,13 @@ export type Loja = {
   aceita_dinheiro: boolean;
   aceita_cartao_entrega: boolean;
   aceita_pix_entrega?: boolean;
-  modo_taxa?: "bairro" | "raio";
+  modo_taxa?: "bairro" | "raio" | "mapa";
   faixas_km?: Faixa[] | null;
+  lat?: number | null;
+  lng?: number | null;
   aceita_mesa?: boolean;
+  aceita_agendamento?: boolean;
+  agendar_dias?: number;
 };
 export type Faixa = { ate: number; taxa: number };
 
@@ -27,6 +31,7 @@ export type Opcao = { id: string; grupo_id: string; nome: string; preco: number;
 export type Grupo = { id: string; produto_id: string; nome: string; minimo: number; maximo: number };
 export type Produto = {
   id: string; nome: string; preco: number; preco_promocional?: number | null; esgotado: boolean; ativo: boolean;
+  dias_semana?: number[] | null; // cardápio do dia (0 = domingo); vazio = todos os dias
 };
 export type Bairro = { id: string; nome: string; taxa: number | null; distancia_km?: number | null };
 export type Cupom = { codigo: string; tipo: "percentual" | "valor" | "frete"; valor: number };
@@ -35,6 +40,7 @@ export type EntradaItem = {
   produto_id: string;
   quantidade: number;
   observacao?: string;
+  para?: string; // nome de quem vai comer (pedido para empresas)
   adicionais?: { opcao_id: string; quantidade: number }[];
 };
 
@@ -50,6 +56,8 @@ export type EntradaPedido = {
   mesa?: string;
   endereco?: string;
   bairro_id?: string;
+  entrega_lat?: number | string | null; // ponto marcado no mapa (modo "mapa")
+  entrega_lng?: number | string | null;
   observacao?: string;
   pagamento: Pagamento;
   troco_para?: number | string | null;
@@ -58,6 +66,8 @@ export type EntradaPedido = {
   origem?: "balcao" | App;   // pedido lançado na loja: de onde veio
   id_externo?: string;       // número do pedido no app
   total_app?: number | string | null; // valor que o app cobrou do cliente
+  agendado_para?: string | null;      // pedido agendado (data e hora)
+  empresa?: string;                   // pedido para empresa
   itens: EntradaItem[];
 };
 
@@ -66,6 +76,8 @@ export type Extras = {
   bairros: Bairro[];        // bairros ativos (vazio = taxa fixa)
   cupom?: Cupom | null;     // cupom já validado pelo banco
   balcao?: boolean;         // pedido lançado pela loja (PDV)
+  agora?: Date;             // relógio (para testes)
+  agendaNoHorario?: boolean; // loja_funciona_em(agendado_para)
 };
 
 export type ItemCalculado = {
@@ -75,8 +87,16 @@ export type ItemCalculado = {
   preco_unitario: number; // produto + adicionais, por unidade
   total: number;
   observacao: string;
+  para?: string;
   adicionais: { grupo: string; nome: string; quantidade: number; preco: number }[];
 };
+
+export const NOMES_DIA = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+/** Dia da semana (0 = domingo) no horário de Brasília. */
+export function diaSemanaBR(d: Date): number {
+  const w = new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", weekday: "short" }).format(d);
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(w);
+}
 
 export class ErroPedido extends Error {}
 
@@ -94,12 +114,19 @@ export function taxaPorFaixa(km: number, faixas: Faixa[]): number | null {
   return f ? Number(f.taxa) : null;
 }
 
+/** Distância em linha reta (km) entre dois pontos — o "raio" do mapa. */
+export function kmLinhaReta(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const r = (g: number) => g * Math.PI / 180;
+  const a = Math.sin(r(lat2 - lat1) / 2) ** 2 + Math.cos(r(lat1)) * Math.cos(r(lat2)) * Math.sin(r(lng2 - lng1) / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(a));
+}
+
 /** Taxa de entrega de um bairro, conforme o modo da loja. null = fora da área. */
 export function taxaDoBairro(loja: Loja, b: Bairro): number | null {
   const km = b.distancia_km == null ? null : Number(b.distancia_km);
   const faixas = loja.faixas_km ?? [];
   const pelaFaixa = km != null && faixas.length ? taxaPorFaixa(km, faixas) : undefined;
-  if (loja.modo_taxa === "raio") {
+  if (loja.modo_taxa === "raio" || loja.modo_taxa === "mapa") {
     if (pelaFaixa !== undefined) return pelaFaixa;
     return b.taxa != null ? Number(b.taxa) : Number(loja.taxa_entrega);
   }
@@ -117,7 +144,20 @@ export function calcularPedido(
   extras: Extras,
 ) {
   const balcao = !!extras.balcao;
-  if (!balcao && !extras.aberta) throw new ErroPedido("A loja está fechada no momento.");
+  // pedido agendado
+  const agora = extras.agora ?? new Date();
+  let agendado: Date | null = null;
+  if (entrada.agendado_para) {
+    agendado = new Date(String(entrada.agendado_para));
+    if (isNaN(agendado.getTime())) throw new ErroPedido("Horário agendado inválido.");
+    if (!balcao && !loja.aceita_agendamento) throw new ErroPedido("A loja não está aceitando pedidos agendados.");
+    if (agendado.getTime() < agora.getTime() + (balcao ? 0 : 30) * 60000) throw new ErroPedido("Escolha um horário daqui a pelo menos 30 minutos.");
+    const dias = Number(loja.agendar_dias ?? 2);
+    if (agendado.getTime() > agora.getTime() + (dias + 1) * 86400000) throw new ErroPedido(`Dá para agendar com até ${dias} dia(s) de antecedência.`);
+    if (!balcao && extras.agendaNoHorario === false) throw new ErroPedido("A loja não funciona nesse horário. Escolha outro.");
+  }
+  if (!balcao && !extras.aberta && !agendado) throw new ErroPedido("A loja está fechada no momento.");
+  const diaPedido = diaSemanaBR(agendado ?? agora);
 
   const nome = texto(entrada.cliente_nome, 80) || (balcao ? "Balcão" : "");
   const telefone = texto(entrada.cliente_telefone, 20).replace(/\D/g, "");
@@ -140,7 +180,7 @@ export function calcularPedido(
   let bairro: Bairro | null = null;
   if (entrada.tipo === "entrega" && extras.bairros.length) {
     bairro = extras.bairros.find((b) => b.id === entrada.bairro_id) ?? null;
-    if (!bairro) throw new ErroPedido("Escolha o seu bairro.");
+    if (!bairro && !(loja.modo_taxa === "mapa" && !balcao)) throw new ErroPedido("Escolha o seu bairro."); // no modo mapa vale o ponto
   }
 
   const origem = balcao && entrada.origem && (APPS as readonly string[]).includes(entrada.origem) ? entrada.origem as App : null;
@@ -177,6 +217,9 @@ export function calcularPedido(
     const p = prodPorId.get(it.produto_id);
     if (!p || !p.ativo) throw new ErroPedido("Um item do carrinho não existe mais. Atualize a página.");
     if (p.esgotado) throw new ErroPedido(`"${p.nome}" está esgotado.`);
+    if (!balcao && p.dias_semana?.length && !p.dias_semana.includes(diaPedido)) {
+      throw new ErroPedido(`"${p.nome}" não está no cardápio de ${NOMES_DIA[diaPedido]}.`);
+    }
     const qtd = Math.floor(Number(it.quantidade));
     if (!(qtd >= 1 && qtd <= 99)) throw new ErroPedido(`Quantidade inválida para "${p.nome}".`);
 
@@ -207,7 +250,7 @@ export function calcularPedido(
     itens.push({
       produto_id: p.id, nome: p.nome, quantidade: qtd,
       preco_unitario: reais(unitC), total: reais(totalC),
-      observacao: texto(it.observacao, 200), adicionais,
+      observacao: texto(it.observacao, 200), ...(texto(it.para, 40) ? { para: texto(it.para, 40) } : {}), adicionais,
     });
   }
 
@@ -216,7 +259,23 @@ export function calcularPedido(
   }
 
   let taxaC = 0;
+  let ponto: { lat: number; lng: number; km: number } | null = null;
   if (entrada.tipo === "entrega") {
+    const la = Number(entrada.entrega_lat), ln = Number(entrada.entrega_lng);
+    const temPonto = entrada.entrega_lat != null && entrada.entrega_lng != null && Number.isFinite(la) && Number.isFinite(ln)
+      && Math.abs(la) <= 90 && Math.abs(ln) <= 180 && !(la === 0 && ln === 0);
+    if (temPonto && loja.lat != null && loja.lng != null) ponto = { lat: la, lng: ln, km: Math.round(kmLinhaReta(Number(loja.lat), Number(loja.lng), la, ln) * 100) / 100 };
+  }
+  if (entrada.tipo === "entrega" && loja.modo_taxa === "mapa" && !balcao) {
+    // igual ao aiqfome: a taxa sai da distância em linha reta até o ponto que o cliente marcou no mapa
+    if (!ponto) throw new ErroPedido("Marque no mapa o local da entrega.");
+    const t = taxaPorFaixa(ponto.km, loja.faixas_km ?? []);
+    if (t == null) {
+      const max = Math.max(0, ...(loja.faixas_km ?? []).map((f) => Number(f.ate)));
+      throw new ErroPedido(`Esse local fica a ${ponto.km.toFixed(1).replace(".", ",")} km da loja — entregamos até ${String(max).replace(".", ",")} km.`);
+    }
+    taxaC = centavos(t);
+  } else if (entrada.tipo === "entrega") {
     let t = bairro ? taxaDoBairro(loja, bairro) : Number(loja.taxa_entrega);
     if (t == null) {
       if (!balcao) throw new ErroPedido(`Infelizmente não entregamos no ${bairro!.nome} (fora da área de entrega).`);
@@ -263,7 +322,12 @@ export function calcularPedido(
       endereco: entrada.tipo === "entrega" ? endereco : null,
       mesa: mesaPedido ? mesa : null,
       bairro: bairro?.nome ?? null,
+      entrega_lat: ponto?.lat ?? null,
+      entrega_lng: ponto?.lng ?? null,
+      distancia_km: ponto?.km ?? null,
       observacao: texto(entrada.observacao, 300) || null,
+      agendado_para: agendado ? agendado.toISOString() : null,
+      empresa: texto(entrada.empresa, 80) || null,
       itens,
       subtotal: reais(subtotalC),
       taxa_entrega: reais(taxaC),
@@ -350,6 +414,13 @@ Deno.serve(async (req) => {
     return json({ erro: "Pedido inválido." }, 400);
   }
 
+  // mesmo envio repetido (clique duplo, internet caiu e o cliente tentou de novo): devolve o pedido já gravado
+  const chave = typeof (entrada as any).chave_envio === "string" ? (entrada as any).chave_envio.slice(0, 64) : null;
+  if (chave) {
+    const { data: ja } = await db.from("pedidos").select("id,numero,pix_copia_cola,pix_qr_base64,checkout_url").eq("chave_envio", chave).maybeSingle();
+    if (ja) return json({ id: ja.id, numero: ja.numero, pix_copia_cola: ja.pix_copia_cola, pix_qr_base64: ja.pix_qr_base64, checkout_url: ja.checkout_url });
+  }
+
   const balcao = entrada.canal === "balcao";
   if (balcao && !(await ehAdmin(req))) return json({ erro: "Somente a loja pode lançar pedido de balcão." }, 403);
 
@@ -359,7 +430,7 @@ Deno.serve(async (req) => {
     db.from("loja").select("*").eq("id", 1).single(),
     db.rpc("loja_aberta_agora"),
     db.from("bairros").select("id,nome,taxa,distancia_km").eq("ativo", true),
-    db.from("produtos").select("id,nome,preco,preco_promocional,esgotado,ativo").in("id", ids.length ? ids : semIds),
+    db.from("produtos").select("id,nome,preco,preco_promocional,esgotado,ativo,dias_semana").in("id", ids.length ? ids : semIds),
     db.from("grupos_adicionais").select("id,produto_id,nome,minimo,maximo").in("produto_id", ids.length ? ids : semIds),
   ]);
   const erroLeitura = lojaR.error ?? abertaR.error ?? bairrosR.error ?? prodR.error ?? grupR.error;
@@ -373,7 +444,12 @@ Deno.serve(async (req) => {
     : { data: [], error: null };
   if (opcR.error) return json({ erro: "Erro ao ler o cardápio. Tente de novo." }, 500);
 
-  const extras = { aberta: !!abertaR.data, bairros: bairrosR.data ?? [], balcao, cupom: null as Cupom | null };
+  let agendaNoHorario: boolean | undefined;
+  if (entrada.agendado_para && !isNaN(new Date(String(entrada.agendado_para)).getTime())) {
+    const { data: ok } = await db.rpc("loja_funciona_em", { p_quando: new Date(String(entrada.agendado_para)).toISOString() });
+    agendaNoHorario = !!ok;
+  }
+  const extras = { aberta: !!abertaR.data, bairros: bairrosR.data ?? [], balcao, cupom: null as Cupom | null, agendaNoHorario };
   let calc;
   try {
     calc = calcularPedido(entrada, lojaR.data, prodR.data ?? [], grupR.data ?? [], opcR.data ?? [], extras);
@@ -396,13 +472,24 @@ Deno.serve(async (req) => {
   const online = calc.registro.pagamento === "pix_online" || calc.registro.pagamento === "cartao_online";
   if (online && !MP_TOKEN) return json({ erro: "Pagamento online ainda não configurado na loja." }, 422);
 
-  const { data: pedido, error } = await db.from("pedidos").insert(calc.registro).select("id,numero,total").single();
+  // reserva o cupom antes de gravar (com várias pessoas ao mesmo tempo o limite não estoura)
+  const tel = calc.registro.cliente_telefone ?? "";
+  if (calc.registro.cupom_codigo) {
+    const { data: msg, error: eCup } = await db.rpc("reservar_cupom", { p_codigo: calc.registro.cupom_codigo, p_telefone: tel });
+    if (eCup) { console.error(eCup); return json({ erro: "Erro ao conferir o cupom. Tente de novo." }, 500); }
+    if (msg) return json({ erro: msg }, 422);
+  }
+  const { data: pedido, error } = await db.from("pedidos").insert({ ...calc.registro, chave_envio: chave }).select("id,numero,total").single();
   if (error) {
+    if (calc.registro.cupom_codigo) await db.rpc("liberar_cupom", { p_codigo: calc.registro.cupom_codigo, p_telefone: tel });
+    if (error.code === "23505" && chave && String(error.message).includes("chave_envio")) {
+      const { data: ja } = await db.from("pedidos").select("id,numero").eq("chave_envio", chave).maybeSingle();
+      if (ja) return json({ id: ja.id, numero: ja.numero });
+    }
     if (error.code === "23505") return json({ erro: "Este pedido do app já foi lançado (mesmo número)." }, 409);
     console.error(error);
     return json({ erro: "Não foi possível registrar o pedido." }, 500);
   }
-  if (calc.registro.cupom_codigo) await db.rpc("usar_cupom", { p_codigo: calc.registro.cupom_codigo });
 
   if (!online) return json({ id: pedido.id, numero: pedido.numero });
 
