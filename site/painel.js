@@ -687,7 +687,7 @@ async function telaPdv() {
 
   function desenharProdutos() {
     const termo = pdv.busca.trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-    $("#pCats").innerHTML = [["", "Todos"], ...(maisVendidos.length ? [["top", "⭐ Mais vendidos"]] : []), ...cd.cats.filter((c) => cd.prods.some((p) => p.ativo && p.categoria_id === c.id)).map((c) => [c.id, c.nome])]
+    $("#pCats").innerHTML = [...(maisVendidos.length ? [["top", "⭐ Mais vendidos"]] : []), ...cd.cats.filter((c) => cd.prods.some((p) => p.ativo && p.categoria_id === c.id)).map((c) => [c.id, c.nome]), ["", "Todos"]]
       .map(([v, t]) => `<button data-cat="${v}" class="${pdv.cat === v ? "ativo" : ""}">${esc(t)}</button>`).join("");
     let prods = cd.prods.filter((p) => p.ativo);
     if (termo) prods = prods.filter((p) => p.nome.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").includes(termo));
