@@ -26,6 +26,7 @@ async function iniciar() {
   if (!session) return mostrarLogin();
   const { data: admin } = await sb.rpc("is_admin");
   if (!admin) { await sb.auth.signOut(); return mostrarLogin("Este usuário não é administrador da loja."); }
+  $("#emailLogado").textContent = session.user?.email || "";
   $("#telaLogin").classList.add("oculto");
   $("#app").classList.remove("oculto");
   $("#linkCardapio").href = new URL("./", location.href).href;
@@ -48,6 +49,16 @@ $("#lEntrar").onclick = async () => {
 };
 $("#lSenha").onkeydown = (e) => { if (e.key === "Enter") $("#lEntrar").click(); };
 $("#sair").onclick = async () => { await sb.auth.signOut(); location.reload(); };
+$("#trocarSenha").onclick = async () => {
+  const r = await formulario({ titulo: "Trocar senha", texto: "Escolha uma senha nova para entrar no painel (mínimo 8 caracteres).",
+    campos: [{ nome: "nova", rotulo: "Senha nova", tipo: "password" }, { nome: "repetir", rotulo: "Repita a senha nova", tipo: "password" }], botao: "Trocar senha" });
+  if (!r) return;
+  if (r.nova.length < 8) return aviso("A senha precisa ter pelo menos 8 caracteres.", "erro");
+  if (r.nova !== r.repetir) return aviso("As duas senhas não são iguais.", "erro");
+  const { error } = await sb.auth.updateUser({ password: r.nova });
+  if (error) return aviso(/same|different/i.test(error.message) ? "A senha nova precisa ser diferente da atual." : "Não trocou: " + error.message, "erro");
+  aviso("Senha trocada! Use a nova da próxima vez que entrar.", "ok");
+};
 
 // ======================================================================
 // Navegação
