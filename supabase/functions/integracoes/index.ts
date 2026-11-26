@@ -263,8 +263,14 @@ async function enviarStatus(cfg: Cfg, p: any, status: string) {
 
 async function verificarCodigo(cfg: Cfg, p: any, codigo: string): Promise<boolean> {
   if (cfg.plataforma !== "ifood") return true; // Open Delivery: o código é conferido no próprio app
-  const { dados } = await chamar(cfg, "POST", `/order/v1.0/orders/${p.api_pedido_id}/verifyDeliveryCode`, { code: codigo });
-  return dados?.valid === true || dados?.success === true;
+  try {
+    const { dados } = await chamar(cfg, "POST", `/order/v1.0/orders/${p.api_pedido_id}/verifyDeliveryCode`, { code: codigo });
+    return dados?.valid !== false && dados?.success !== false;
+  } catch (e) {
+    // o iFood responde 400 "Confirmation code is invalid" quando o código está errado
+    if (e instanceof ErroApp && [400, 404, 409, 422].includes(e.status) && /invalid|inv[aá]lid|NOT_FOUND/i.test(e.message)) return false;
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------- entrada
