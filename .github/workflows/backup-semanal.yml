@@ -1,0 +1,64 @@
+# Backup semanal do banco da Marmitaria (Supabase) + fotos do cardápio.
+# O arquivo sai CRIPTOGRAFADO (o repositório é público) e fica 90 dias em Actions → Backup semanal → Artifacts.
+# Segredos necessários (Settings → Secrets and variables → Actions):
+#   SUPABASE_DB_URL  = string de conexão "Session pooler" do Supabase (com a senha do banco)
+#   BACKUP_SENHA     = senha que você escolhe para abrir o backup (guarde bem: sem ela o backup não abre)
+name: Backup semanal
+
+on:
+  schedule:
+    - cron: "17 6 * * 0"   # todo domingo às 03:17 (Brasília)
+  workflow_dispatch: {}     # botão "Run workflow" para fazer na hora
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DB: ${{ secrets.SUPABASE_DB_URL }}
+      SENHA: ${{ secrets.BACKUP_SENHA }}
+      SUPABASE_URL: https://stjmvltcfhwclsvvviyp.supabase.co
+    steps:
+      - name: Conferir segredos
+        run: |
+          [ -n "$DB" ] || { echo "::error::Falta o segredo SUPABASE_DB_URL"; exit 1; }
+          [ "${#SENHA}" -ge 12 ] || { echo "::error::Falta o segredo BACKUP_SENHA (mínimo 12 caracteres)"; exit 1; }
+
+      - name: Copiar o banco
+        run: |
+          mkdir -p backup/fotos
+          docker run --rm --network host -e DB -v "$PWD/backup:/b" postgres:17 sh -ec '
+            pg_dump "$DB" --no-owner --no-privileges --schema=public -Fc -f /b/banco.dump
+            pg_dump "$DB" --no-owner --no-privileges --schema=public --data-only --column-inserts -f /b/dados.sql
+            psql "$DB" -Atc "select name from storage.objects where bucket_id = '"'"'fotos'"'"' order by name" > /b/fotos.txt
+            psql "$DB" -Atc "select count(*) from public.pedidos" > /b/total-pedidos.txt'
+          echo "Pedidos no banco: $(cat backup/total-pedidos.txt)"
+
+      - name: Copiar as fotos
+        run: |
+          ok=0; falhou=0
+          while IFS= read -r nome; do
+            [ -n "$nome" ] || continue
+            if curl -sfL --create-dirs -o "backup/fotos/$nome" "$SUPABASE_URL/storage/v1/object/public/fotos/$nome"; then ok=$((ok+1)); else falhou=$((falhou+1)); fi
+          done < backup/fotos.txt
+          echo "Fotos copiadas: $ok (falharam: $falhou)"
+
+      - name: Criptografar
+        run: |
+          data=$(TZ=America/Sao_Paulo date +%Y-%m-%d)
+          echo "ARQ=backup-marmitaria-$data.tar.gz.gpg" >> "$GITHUB_ENV"
+          tar czf - backup | gpg --batch --yes --pinentry-mode loopback --symmetric --cipher-algo AES256 \
+            --passphrase "$SENHA" -o "backup-marmitaria-$data.tar.gz.gpg"
+          rm -rf backup
+          ls -lh backup-marmitaria-*.gpg
+
+      - name: Guardar (90 dias)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARQ }}
+          path: ${{ env.ARQ }}
+          retention-days: 90
+          if-no-files-found: error
