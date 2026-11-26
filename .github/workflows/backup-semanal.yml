@@ -26,11 +26,21 @@ jobs:
         run: |
           [ -n "$DB" ] || { echo "::error::Falta o segredo SUPABASE_DB_URL"; exit 1; }
           [ "${#SENHA}" -ge 12 ] || { echo "::error::Falta o segredo BACKUP_SENHA (mínimo 12 caracteres)"; exit 1; }
+          # tira espaços/aspas que vieram junto ao colar
+          limpo=$(printf '%s' "$DB" | tr -d '\r\n' | sed -e 's/^[[:space:]"'"'"']*//' -e 's/[[:space:]"'"'"']*$//')
+          case "$limpo" in
+            postgres://*|postgresql://*) ;;
+            *) echo "::error::SUPABASE_DB_URL precisa ser o endereço completo começando com postgresql:// (não só a senha)"; exit 1 ;;
+          esac
+          if printf '%s' "$limpo" | grep -q '\[YOUR-PASSWORD\]\|\[YOUR-DATABASE-PASSWORD\]'; then echo "::error::Troque [YOUR-PASSWORD] pela senha do banco no SUPABASE_DB_URL"; exit 1; fi
+          echo "Servidor: ${limpo##*@}"
+          echo "::add-mask::$limpo"
+          echo "DB_LIMPO=$limpo" >> "$GITHUB_ENV"
 
       - name: Copiar o banco
         run: |
           mkdir -p backup/fotos
-          docker run --rm --network host -e DB -v "$PWD/backup:/b" postgres:17 sh -ec '
+          docker run --rm --network host -e DB="$DB_LIMPO" -v "$PWD/backup:/b" postgres:17 sh -ec '
             pg_dump "$DB" --no-owner --no-privileges --schema=public -Fc -f /b/banco.dump
             pg_dump "$DB" --no-owner --no-privileges --schema=public --data-only --column-inserts -f /b/dados.sql
             psql "$DB" -Atc "select name from storage.objects where bucket_id = '"'"'fotos'"'"' order by name" > /b/fotos.txt
