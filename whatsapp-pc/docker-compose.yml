@@ -1,0 +1,68 @@
+# WhatsApp automático da Marmitaria Central — roda no PC da loja com o Docker Desktop.
+# evolution  = o "WhatsApp Web" que manda as mensagens (Evolution API 2.3.8, gratuita)
+# banco      = onde a Evolution guarda a sessão do WhatsApp
+# tunel      = endereço público grátis da Cloudflare para o painel alcançar este PC
+# avisar     = conta ao painel o endereço do túnel (ele muda quando o PC reinicia)
+name: whatsapp-marmitaria
+
+services:
+  evolution:
+    image: evoapicloud/evolution-api:v2.3.8
+    restart: always
+    depends_on: [banco]
+    ports: ["127.0.0.1:8080:8080"]
+    volumes: [instancias:/evolution/instances]
+    environment:
+      SERVER_TYPE: http
+      SERVER_PORT: "8080"
+      SERVER_URL: http://localhost:8080
+      AUTHENTICATION_API_KEY: ${CHAVE:?rode o INSTALAR.bat}
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://evolution:${SENHA_BANCO:?rode o INSTALAR.bat}@banco:5432/evolution?schema=public
+      DATABASE_CONNECTION_CLIENT_NAME: marmitaria
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "false"
+      DATABASE_SAVE_MESSAGE_UPDATE: "false"
+      DATABASE_SAVE_DATA_CONTACTS: "false"
+      DATABASE_SAVE_DATA_CHATS: "false"
+      DATABASE_SAVE_DATA_LABELS: "false"
+      DATABASE_SAVE_DATA_HISTORIC: "false"
+      CACHE_REDIS_ENABLED: "false"
+      CACHE_LOCAL_ENABLED: "true"
+      DEL_INSTANCE: "false"
+      LANGUAGE: pt-BR
+      LOG_LEVEL: ERROR,WARN
+      CONFIG_SESSION_PHONE_CLIENT: Marmitaria Central
+      CONFIG_SESSION_PHONE_NAME: Chrome
+      QRCODE_LIMIT: "30"
+      TELEMETRY_ENABLED: "false"
+
+  banco:
+    image: postgres:15-alpine
+    restart: always
+    volumes: [banco:/var/lib/postgresql/data]
+    environment:
+      POSTGRES_DB: evolution
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: ${SENHA_BANCO}
+
+  tunel:
+    image: cloudflare/cloudflared:latest
+    restart: always
+    depends_on: [evolution]
+    command: ["tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:2000", "--url", "http://evolution:8080"]
+
+  avisar:
+    image: curlimages/curl:latest
+    restart: always
+    depends_on: [tunel]
+    entrypoint: ["/bin/sh", "/script/avisar.sh"]
+    volumes: ["./avisar.sh:/script/avisar.sh:ro"]
+    environment:
+      CHAVE: ${CHAVE}
+      FUNCAO: https://stjmvltcfhwclsvvviyp.supabase.co/functions/v1/avisar-whatsapp
+      ANON: sb_publishable__7xC5LQcxt6-pRXKVJ02fw_BuRpc0ei
+
+volumes:
+  instancias:
+  banco:

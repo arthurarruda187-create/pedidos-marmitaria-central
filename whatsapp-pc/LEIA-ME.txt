@@ -1,0 +1,42 @@
+﻿WHATSAPP AUTOMÁTICO — MARMITARIA CENTRAL (Evolution API, grátis)
+================================================================
+
+O que é: um programa que fica ligado neste PC e manda as mensagens do pedido
+(recebido, em preparo, saiu para entrega com o código, entregue...) pelo
+WhatsApp da loja, igual ao WhatsApp Web. Não tem mensalidade.
+
+PRECISA:
+  • PC com Windows 10/11 que fique ligado no horário da loja, com internet.
+  • Docker Desktop (grátis): https://www.docker.com/products/docker-desktop/
+  • O celular da loja com o WhatsApp (ou WhatsApp Business).
+
+INSTALAR (só uma vez):
+  1. Instale o Docker Desktop. Se ele pedir para reiniciar ou instalar o WSL, aceite.
+     Abra o Docker Desktop uma vez e pule o login (não precisa conta).
+  2. No Docker Desktop: Settings → General → marque
+     "Start Docker Desktop when you sign in to your computer".
+  3. Coloque esta pasta em C:\WhatsApp-Marmitaria e dê dois cliques em INSTALAR.bat.
+     A primeira vez baixa uns 600 MB e demora alguns minutos.
+  4. Ele mostra a CHAVE e já copia. No painel: WhatsApp automático → Evolution →
+     cole a chave → Salvar conexão.
+  5. Em até 1 minuto o painel mostra "PC online". Clique em "Conectar WhatsApp" e,
+     no celular da loja: WhatsApp → Aparelhos conectados → Conectar um aparelho →
+     leia o QR Code.
+  6. Mande uma mensagem de teste pelo painel e ligue o "Envio automático".
+
+NO DIA A DIA: nada. Ligou o PC, o Docker abre sozinho e tudo volta em 1–2 minutos.
+
+ARQUIVOS:
+  INSTALAR.bat   → instala ou liga de novo
+  VER-CHAVE.bat  → mostra a chave e se está tudo funcionando
+  REINICIAR.bat  → se o painel disser que o PC não responde
+  PARAR.bat      → desliga (a conexão do WhatsApp fica salva)
+  .env           → guarda a chave. NÃO apague e não mande para ninguém.
+
+CUIDADOS:
+  • Este jeito usa o WhatsApp Web, não é a API oficial da Meta. Use só para
+    avisar clientes que fizeram pedido. Nada de mensagens em massa/propaganda,
+    senão o WhatsApp pode bloquear o número.
+  • O celular da loja precisa entrar na internet pelo menos a cada 14 dias,
+    senão o WhatsApp desconecta os aparelhos conectados.
+  • Se o PC desligar, as mensagens param (os pedidos continuam normais).
