@@ -2036,21 +2036,28 @@ async function telaWhatsapp() {
   const { data: ps } = ids.length ? await sb.from("pedidos").select("id,numero,cliente_nome").in("id", ids) : { data: [] };
   const porId = new Map((ps || []).map((p) => [p.id, p]));
   const msgs = { ...(loja.mensagens_auto || {}) };
-  const conectado = !!(cfg?.zapi_instancia && cfg?.zapi_token);
+  const tipoSalvo = cfg?.zapi_token ? (cfg?.zapi_tipo || "omni") : null;
+  const conectado = !!(cfg?.zapi_token && (tipoSalvo === "evolution" ? cfg?.evo_url : cfg?.zapi_instancia));
   $("#wCorpo").innerHTML = `
     <div class="caixa"><h2>Envio automático</h2>
       <label class="chave-grande"><input type="checkbox" id="wAtivo" ${loja.whatsapp_auto ? "checked" : ""} ${conectado ? "" : "disabled"}>
         <span><b>${loja.whatsapp_auto ? "✅ Ligado" : "Desligado"}</b> — o cliente recebe uma mensagem a cada mudança no pedido</span></label>
-      ${conectado ? "" : `<p class="aviso-som" style="margin-top:.6rem"><span>Primeiro conecte a Z-API logo abaixo.</span></p>`}
+      ${conectado ? "" : `<p class="aviso-som" style="margin-top:.6rem"><span>Primeiro conecte o WhatsApp logo abaixo.</span></p>`}
       <p class="muted" style="margin-bottom:0">Não envia para pedidos do iFood/aiqfome/Keeta/99Food, pedidos de mesa ou sem telefone.</p></div>
-    <div class="caixa"><h2>Conectar a Z-API ${conectado ? `<span class="badge ok">conectada</span>` : `<span class="badge alerta">não conectada</span>`}</h2>
-      <div class="seg" style="max-width:420px;margin-bottom:.7rem">${[["omni", "Z-API Omni (nova)"], ["classica", "Z-API clássica"]].map(([v, t]) => `<button data-ztipo="${v}" class="${(cfg?.zapi_tipo || "omni") === v ? "ativo" : ""}">${t}</button>`).join("")}</div>
-      <div id="zOmni" class="${(cfg?.zapi_tipo || "omni") === "omni" ? "" : "oculto"}">
+    <div class="caixa"><h2>Conectar o WhatsApp ${conectado ? `<span class="badge ok">configurado</span>` : `<span class="badge alerta">não conectado</span>`}</h2>
+      <div class="seg" style="max-width:520px;margin-bottom:.7rem">${[["evolution", "Evolution (grátis, PC da loja)"], ["omni", "Z-API Omni"], ["classica", "Z-API clássica"]].map(([v, t]) => `<button data-ztipo="${v}" class="${(tipoSalvo || "evolution") === v ? "ativo" : ""}">${t}</button>`).join("")}</div>
+      <div id="zEvo" class="${(tipoSalvo || "evolution") === "evolution" ? "" : "oculto"}">
+        <ol class="passos-z"><li>No PC da loja, instale o <b>Docker Desktop</b> e rode o <b>INSTALAR.bat</b> da pasta <b>WhatsApp-Marmitaria</b>.</li>
+          <li>Ele mostra a <b>chave</b> (e já copia). Cole aqui e clique em <b>Salvar conexão</b>.</li>
+          <li>Em até 1 minuto o PC aparece como <b>online</b>. Clique em <b>Conectar WhatsApp</b> e leia o QR Code no celular da loja (WhatsApp → Aparelhos conectados).</li></ol>
+        <div class="grade2"><div><label class="rot">Chave da Evolution</label><input class="campo" id="eKey" type="password" autocomplete="off" placeholder="${tipoSalvo === "evolution" ? "salva ✓ (cole para trocar)" : "cole a chave que o INSTALAR mostrou"}"></div><div></div></div>
+        ${tipoSalvo === "evolution" ? `<div class="evo-status" id="evoStatus"><p class="muted" style="margin:0">Verificando o PC…</p></div>` : ""}</div>
+      <div id="zOmni" class="${tipoSalvo === "omni" ? "" : "oculto"}">
         <ol class="passos-z"><li>Em <b>Mensageria → Conexões</b>, abra <b>Detalhes</b> da conexão e copie o <b>ID do canal</b>.</li>
           <li>No menu <b>Segurança</b> da Z-API Omni, gere/copie a <b>Secret Key</b> (se não achar, use o <b>Token</b> que aparece nos Detalhes da conexão).</li></ol>
         <div class="grade2"><div><label class="rot">ID do canal</label><input class="campo" id="oId" autocomplete="off" placeholder="${cfg?.zapi_tipo !== "classica" && cfg?.zapi_instancia ? "salvo ✓ (cole para trocar)" : ""}"></div>
           <div><label class="rot">Secret Key (ou Token do canal)</label><input class="campo" id="oKey" type="password" autocomplete="off" placeholder="${cfg?.zapi_tipo !== "classica" && cfg?.zapi_token ? "salvo ✓ (cole para trocar)" : ""}"></div></div></div>
-      <div id="zClassica" class="${cfg?.zapi_tipo === "classica" ? "" : "oculto"}">
+      <div id="zClassica" class="${tipoSalvo === "classica" ? "" : "oculto"}">
       <ol class="passos-z">
         <li>Crie a instância em <a href="https://z-api.io" target="_blank" rel="noopener">z-api.io</a> e leia o <b>QR Code</b> com o WhatsApp da loja.</li>
         <li>Copie o <b>ID da instância</b> e o <b>Token da instância</b>. Em <b>Segurança</b>, copie o <b>Client-Token</b> da conta.</li></ol>
@@ -2075,19 +2082,29 @@ async function telaWhatsapp() {
     if (error) { e.target.checked = !e.target.checked; return aviso(error.message, "erro"); }
     await carregarLoja(); telaWhatsapp(); aviso(e.target.checked ? "WhatsApp automático ligado" : "WhatsApp automático desligado", "ok");
   };
-  let zTipo = cfg?.zapi_tipo || "omni";
+  let zTipo = tipoSalvo || "evolution";
   C().querySelectorAll("[data-ztipo]").forEach((b) => b.onclick = () => {
     zTipo = b.dataset.ztipo; C().querySelectorAll("[data-ztipo]").forEach((x) => x.classList.toggle("ativo", x === b));
+    $("#zEvo").classList.toggle("oculto", zTipo !== "evolution");
     $("#zOmni").classList.toggle("oculto", zTipo !== "omni"); $("#zClassica").classList.toggle("oculto", zTipo !== "classica");
   });
+  if (tipoSalvo === "evolution") painelEvolution();
   $("#zSalvar").onclick = async () => {
     const d = { url_funcao: `${SUPABASE_URL}/functions/v1/avisar-whatsapp`, chave_anon: SUPABASE_ANON_KEY };
     d.zapi_tipo = zTipo;
-    const omni = zTipo === "omni";
-    const inst = (omni ? $("#oId") : $("#zInst")).value.trim(), tok = (omni ? $("#oKey") : $("#zTok")).value.trim(), cli = $("#zCli").value.trim();
-    if (inst) d.zapi_instancia = inst; if (tok) d.zapi_token = tok; if (cli && !omni) d.zapi_client_token = cli;
-    const trocouTipo = (cfg?.zapi_tipo || "omni") !== zTipo;
-    if ((!cfg?.zapi_instancia || trocouTipo) && (!inst || !tok)) return $("#zErro").textContent = omni ? "Cole o ID do canal e a Secret Key." : "Cole o ID e o Token da instância.";
+    const trocouTipo = tipoSalvo !== zTipo;
+    if (zTipo === "evolution") {
+      const k = $("#eKey").value.trim();
+      if (trocouTipo && !k) return $("#zErro").textContent = "Cole a chave que o INSTALAR.bat mostrou no PC.";
+      if (k && k.length < 16) return $("#zErro").textContent = "Essa chave está curta demais — copie de novo pelo VER-CHAVE.bat.";
+      d.zapi_instancia = "marmitaria"; if (k) d.zapi_token = k;
+      if (trocouTipo) { d.evo_url = null; d.evo_visto_em = null; }
+    } else {
+      const omni = zTipo === "omni";
+      const inst = (omni ? $("#oId") : $("#zInst")).value.trim(), tok = (omni ? $("#oKey") : $("#zTok")).value.trim(), cli = $("#zCli").value.trim();
+      if (inst) d.zapi_instancia = inst; if (tok) d.zapi_token = tok; if (cli && !omni) d.zapi_client_token = cli;
+      if ((!cfg?.zapi_instancia || trocouTipo) && (!inst || !tok)) return $("#zErro").textContent = omni ? "Cole o ID do canal e a Secret Key." : "Cole o ID e o Token da instância.";
+    }
     const { error } = await sb.from("config_privada").update(d).eq("id", 1);
     if (error) return $("#zErro").textContent = error.message;
     await sb.from("loja").update({ site_url: new URL("./", location.href).href }).eq("id", 1);
@@ -2115,6 +2132,71 @@ async function telaWhatsapp() {
     if (error) return aviso(error.message, "erro");
     await carregarLoja(); aviso("Mensagens salvas", "ok");
   };
+}
+
+// --- Evolution API: estado do PC, QR Code e desconectar ---
+async function chamarWhats(corpo) {
+  const { data: { session } } = await sb.auth.getSession();
+  const r = await fetch(`${SUPABASE_URL}/functions/v1/avisar-whatsapp`, { method: "POST",
+    headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token}` }, body: JSON.stringify(corpo) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.erro || `Falhou (${r.status})`);
+  return d;
+}
+
+async function painelEvolution() {
+  const caixa = () => document.getElementById("evoStatus");
+  if (!caixa()) return;
+  let d;
+  try { d = await chamarWhats({ evo: "estado" }); } catch (e) { if (caixa()) caixa().innerHTML = `<p class="erro">${esc(e.message)}</p>`; return; }
+  if (!caixa()) return;
+  const visto = d.visto_em ? new Date(d.visto_em) : null;
+  const minutos = visto ? Math.round((Date.now() - visto) / 60000) : null;
+  const sinal = visto ? (minutos < 1 ? "agora há pouco" : `há ${minutos} min`) : "nunca";
+  let html;
+  if (!d.tem_url) html = `<p class="linha-evo">🔴 <b>O PC ainda não apareceu.</b> Rode o <b>INSTALAR.bat</b> no PC da loja e confira se a chave colada aqui é a mesma (VER-CHAVE.bat). Ele aparece em até 1 minuto.</p>
+      <button class="btn sec peq" id="evoAtualizar">↻ Verificar de novo</button>`;
+  else if (d.estado === "offline") html = `<p class="linha-evo">🟠 <b>PC sem resposta</b> — último sinal ${sinal}.<br><span class="muted">${esc(d.erro || "")}</span></p>
+      <button class="btn sec peq" id="evoAtualizar">↻ Verificar de novo</button>`;
+  else if (d.estado === "open") html = `<p class="linha-evo">🟢 <b>WhatsApp conectado</b> · PC online (sinal ${sinal})</p>
+      <button class="btn perigo peq" id="evoSair">Desconectar o WhatsApp</button>`;
+  else html = `<p class="linha-evo">🟡 PC online (sinal ${sinal}) · <b>WhatsApp não conectado</b></p>
+      <button class="btn" id="evoConectar">📱 Conectar WhatsApp (QR Code)</button><div id="evoQr"></div>`;
+  caixa().innerHTML = html;
+  const at = document.getElementById("evoAtualizar"); if (at) at.onclick = () => { caixa().innerHTML = `<p class="muted" style="margin:0">Verificando o PC…</p>`; painelEvolution(); };
+  const sair = document.getElementById("evoSair");
+  if (sair) sair.onclick = async () => {
+    if (!(await confirmar("Desconectar o WhatsApp?", "As mensagens automáticas param até você ler o QR Code de novo.", { botao: "Desconectar", perigo: true }))) return;
+    try { await chamarWhats({ evo: "sair" }); aviso("WhatsApp desconectado", "ok"); } catch (e) { aviso(e.message, "erro"); }
+    painelEvolution();
+  };
+  const con = document.getElementById("evoConectar");
+  if (con) con.onclick = () => lerQrEvolution(con);
+}
+
+async function lerQrEvolution(botao) {
+  const area = document.getElementById("evoQr");
+  botao.disabled = true; botao.textContent = "Gerando QR Code…";
+  const inicio = Date.now(); let ultimoQr = 0;
+  const mostrar = (qr) => { area.innerHTML = qr
+    ? `<div class="qr-evo"><img src="${qr.startsWith("data:") ? qr : "data:image/png;base64," + qr}" alt="QR Code"><p>No celular da loja: <b>WhatsApp → ⋮ (ou Configurações) → Aparelhos conectados → Conectar um aparelho</b> e aponte para este código.</p></div>`
+    : `<p class="muted">Esperando o QR Code…</p>`; };
+  try {
+    while (document.getElementById("evoQr") && Date.now() - inicio < 180000) {
+      if (Date.now() - ultimoQr > 25000) {
+        const d = await chamarWhats({ evo: "conectar" });
+        if (d.estado === "open") break;
+        if (d.estado === "offline") throw new Error(d.erro || "PC sem resposta");
+        mostrar(d.qr); ultimoQr = Date.now(); botao.textContent = "Aguardando a leitura…";
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+      const e = await chamarWhats({ evo: "estado" });
+      if (e.estado === "open") break;
+    }
+    if (!document.getElementById("evoQr")) return;
+    if (Date.now() - inicio >= 180000) { aviso("O QR Code expirou. Clique em Conectar de novo.", "erro"); return painelEvolution(); }
+    aviso("WhatsApp conectado! 🎉", "ok"); telaWhatsapp();
+  } catch (e) { aviso("Não conectou: " + e.message, "erro"); painelEvolution(); }
 }
 
 // ======================================================================
