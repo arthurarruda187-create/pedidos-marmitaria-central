@@ -313,6 +313,13 @@ code{background:#f4f4f5;padding:0 .3rem;border-radius:4px;font-size:.85em}
   .linha-taxa { align-items: center; }
   .taxa-edit { display: inline-flex; align-items: center; gap: .25rem; }
   .taxa-edit .campo { width: 78px; padding: .2rem .4rem; text-align: right; font-size: .9rem; }
+  .mapa-mesas { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: .6rem; }
+  .mapa-mesas .mesa { border: 1.5px solid var(--linha); background: #f4f4f5; border-radius: 12px; padding: .7rem .4rem; text-align: center; color: var(--suave); }
+  .mapa-mesas .mesa b { display: block; font-size: 1.5rem; color: var(--texto); }
+  .mapa-mesas .mesa small { display: block; font-size: .75rem; }
+  .mapa-mesas .mesa.ocupada { background: #fff7ed; border-color: #fb923c; color: #9a3412; cursor: pointer; }
+  .mapa-mesas .mesa.ocupada span { display: block; font-weight: 800; font-size: 1rem; }
+  .mapa-mesas .mesa.ocupada:hover { background: #ffedd5; }
 </style>
 </head>
 <body>
@@ -346,7 +353,7 @@ code{background:#f4f4f5;padding:0 .3rem;border-radius:4px;font-size:.85em}
       <button data-aba="cardapio">🍽️ Cardápio</button>
       <button data-aba="cupons">🏷️ Cupons</button>
       <button data-aba="entrega">📍 Entrega e horários</button>
-      <button data-aba="mesas">🍽️ Mesas (QR Code)</button>
+      <button data-aba="mesas">🍽️ Mesas</button>
       <button data-aba="whatsapp">💬 WhatsApp automático</button>
       <button data-aba="apps">🔌 Apps de delivery</button>
       <button data-aba="loja">⚙️ Loja</button>

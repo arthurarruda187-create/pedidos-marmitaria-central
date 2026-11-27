@@ -341,6 +341,7 @@ function cardPedido(p) {
     <div class="acoes">
       ${proximo ? `<button class="btn ${p.status === "novo" ? "ok" : "escuro"} principal" data-acao="status" data-para="${proximo[0]}">${proximo[1]}</button>` : ""}
       ${p.pagamento === "caixa" && p.pagamento_status !== "pago" ? `<button class="btn sec peq" data-acao="receber">💰 Receber</button>` : ""}
+      ${p.tipo === "mesa" && !p.mesa_fechada_em ? `<button class="btn sec peq" data-acao="contamesa">🧾 Conta da mesa</button>` : ""}
       ${p.pagamento === "pix_entrega" && p.pagamento_status !== "pago" ? `<button class="btn sec peq" data-acao="enviarpix">💠 Enviar Pix</button><button class="btn sec peq" data-acao="pago">✓ Marcar pago</button>` : ""}
       <button class="btn sec peq" data-acao="imprimir">🖨 Imprimir</button>
       ${(p.itens || []).some((it) => it.para) ? `<button class="btn sec peq" data-acao="etiquetas">🏷 Etiquetas</button>` : ""}
@@ -455,6 +456,7 @@ async function acao(tipo, id, para) {
     return window.open(`https://wa.me/${foneWhats(p.cliente_telefone)}?text=${encodeURIComponent(msg)}`, "_blank");
   }
   if (tipo === "pago") return atualizarPedido(id, { pagamento_status: "pago" });
+  if (tipo === "contamesa") return abrirContaMesa(p.mesa);
   if (tipo === "receber") { // mesa: cliente pagou no caixa → grava a forma real
     const p = pedidos.get(id); if (!p) return;
     const forma = await new Promise((ok) => {
@@ -2317,9 +2319,90 @@ function carregarQr() {
     document.head.appendChild(sc);
   });
 }
+
+// ======================================================================
+// Mesas: conta da mesa e "fechar mesa"
+// ======================================================================
+const FORMAS_MESA = [["dinheiro", "💵 Dinheiro"], ["cartao_entrega", "💳 Cartão"], ["pix_entrega", "💠 Pix"]];
+async function contasMesas() {
+  const { data, error } = await sb.from("pedidos").select("*").eq("tipo", "mesa").is("mesa_fechada_em", null).neq("status", "cancelado").order("criado_em").limit(500);
+  if (error) throw error;
+  const m = new Map();
+  for (const p of data || []) { const k = String(p.mesa); const x = m.get(k) || { mesa: k, peds: [], total: 0, aPagar: 0, desde: p.criado_em }; x.peds.push(p); x.total += num(p.total);
+    if (p.pagamento_status !== "pago" && p.pagamento !== "pago_app") x.aPagar += num(p.total); m.set(k, x); }
+  return m;
+}
+// junta os itens iguais da mesa (2x Coca + 1x Coca = 3x Coca)
+function itensDaMesa(peds) {
+  const m = new Map();
+  for (const p of peds) for (const it of p.itens || []) {
+    const ads = (it.adicionais || []).map((a) => (a.quantidade > 1 ? a.quantidade + "x " : "") + a.nome).join(", ");
+    const k = it.nome + "|" + ads + "|" + (it.observacao || "");
+    const x = m.get(k) || { nome: it.nome, ads, obs: it.observacao || "", q: 0, v: 0 }; x.q += it.quantidade; x.v += num(it.total); m.set(k, x);
+  }
+  return [...m.values()];
+}
+function imprimirContaMesa(c, { forma = null } = {}) {
+  const { papel } = confImp(), larg = papel === "58" ? 48 : 72;
+  const ln = (a, b, cls = "") => `<div class="ln ${cls}"><span>${a}</span><span>${b}</span></div>`;
+  const taxas = c.peds.reduce((s, p) => s + num(p.taxa_entrega), 0), desc = c.peds.reduce((s, p) => s + num(p.desconto), 0);
+  const agora = new Date();
+  const w = quadroImpressao(papel); w.document.open();
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Conta mesa ${esc(c.mesa)}</title><style>
+    @page { size: ${papel}mm auto; margin: 2mm; } * { box-sizing: border-box; }
+    body { margin: 0; width: ${larg}mm; font: ${papel === "58" ? 12 : 13}px/1.35 Arial, Helvetica, sans-serif; color: #000; }
+    .c { text-align: center; } h1 { font-size: 2.2em; margin: 1mm 0; text-align: center; } .loja { text-align: center; font-weight: 700; text-transform: uppercase; }
+    .ln { display: flex; justify-content: space-between; gap: 2mm; padding: .6mm 0; } .ln span:last-child { white-space: nowrap; }
+    .it { border-bottom: 1px dotted #888; } .ad { padding-left: 4mm; font-size: .9em; }
+    .tot { font-weight: 900; font-size: 1.4em; border-top: 2px solid #000; margin-top: 1.5mm; padding-top: 1mm; }
+    .pag { text-align: center; font-weight: 900; font-size: 1.2em; border: 2px solid #000; padding: 1.5mm; margin-top: 2mm; }
+  </style></head><body>
+    <div class="loja">${esc(loja.nome)}</div><h1>MESA ${esc(c.mesa)}</h1>
+    <div class="c">${forma ? "CONTA FECHADA" : "CONFERÊNCIA DA CONTA"}<br>${dataBR(agora)} ${hora(agora)} · ${c.peds.length} pedido${c.peds.length === 1 ? "" : "s"} (${c.peds.map((p) => "#" + p.numero).join(", ")})</div><br>
+    ${itensDaMesa(c.peds).map((i) => `<div class="it">${ln(`<b>${i.q}x</b> ${esc(i.nome)}`, brl(i.v))}${i.ads ? `<div class="ad">+ ${esc(i.ads)}</div>` : ""}</div>`).join("")}
+    ${taxas ? ln("Taxas", brl(taxas)) : ""}${desc ? ln("Descontos", "−" + brl(desc)) : ""}
+    ${ln("TOTAL", brl(c.total), "tot")}
+    ${forma ? `<div class="pag">✓ PAGO · ${esc(NOMES_PAGAMENTO[forma] || forma)}</div>` : c.aPagar < c.total ? ln("Já pago", brl(c.total - c.aPagar)) + ln("<b>A PAGAR</b>", `<b>${brl(c.aPagar)}</b>`) : ""}
+    <br><div class="c">Obrigado pela preferência! 😊</div></body></html>`);
+  w.document.close(); mandarParaImpressora(w);
+}
+async function abrirContaMesa(mesa, depois = () => {}) {
+  let c;
+  try { c = (await contasMesas()).get(String(mesa)); } catch (e) { return aviso(e.message, "erro"); }
+  if (!c) return aviso(`A mesa ${mesa} está livre`, "info");
+  const abertos = c.peds.filter((p) => !["entregue"].includes(p.status));
+  const f = abrirModal(`<h2 style="margin:0 0 .2rem">🍽️ Mesa ${esc(c.mesa)}</h2>
+    <p class="muted" style="margin:0 0 .6rem">Aberta às ${hora(c.desde)} · ${c.peds.length} pedido${c.peds.length === 1 ? "" : "s"}</p>
+    <table class="t">${itensDaMesa(c.peds).map((i) => `<tr><td><b>${i.q}x</b> ${esc(i.nome)}${i.ads ? `<br><small class="muted">+ ${esc(i.ads)}</small>` : ""}</td><td class="num">${brl(i.v)}</td></tr>`).join("")}
+      <tr><td><b>Total</b></td><td class="num"><b style="font-size:1.2rem">${brl(c.total)}</b></td></tr>
+      ${c.aPagar < c.total ? `<tr><td>Já pago</td><td class="num">${brl(c.total - c.aPagar)}</td></tr><tr><td><b>A pagar</b></td><td class="num"><b>${brl(c.aPagar)}</b></td></tr>` : ""}</table>
+    ${abertos.length ? `<p class="aviso" style="margin:.6rem 0 0">⚠ ${abertos.length} pedido(s) ainda não servido(s): ${abertos.map((p) => "#" + p.numero + " (" + esc(NOMES_STATUS[p.status]) + ")").join(", ")}</p>` : ""}
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:1rem"><button class="btn sec" data-conta>🖨 Imprimir conta</button></div>
+    <h3 style="margin:1rem 0 .4rem">Fechar mesa — como pagou?</h3>
+    <div class="seg">${(c.aPagar > 0 ? FORMAS_MESA : [["", "✓ Já está tudo pago"]]).map(([v, t]) => `<button data-fechar="${v}">${t}</button>`).join("")}</div>
+    <label class="check" style="margin-top:.6rem"><input type="checkbox" id="impFech" checked> imprimir a conta ao fechar</label>
+    <p class="muted" style="margin:.4rem 0 0;font-size:.85rem">Ao fechar, a mesa fica livre e o próximo cliente começa uma conta nova.</p>`, 520);
+  f.querySelector("[data-conta]").onclick = () => imprimirContaMesa(c);
+  f.querySelectorAll("[data-fechar]").forEach((b) => b.onclick = async () => {
+    const forma = b.dataset.fechar || null, agora = new Date().toISOString();
+    if (abertos.length && !(await confirmar(`Fechar a mesa ${esc(c.mesa)}?`, `Ainda tem pedido não servido. Os pedidos continuam no quadro da cozinha, só a conta é fechada.`, { botao: "Fechar mesa" }))) return;
+    const ids = c.peds.map((p) => p.id), aPagarIds = c.peds.filter((p) => p.pagamento_status !== "pago" && p.pagamento !== "pago_app").map((p) => p.id);
+    if (forma && aPagarIds.length) {
+      const { error } = await sb.from("pedidos").update({ pagamento: forma, pagamento_status: "pago" }).in("id", aPagarIds);
+      if (error) return aviso(error.message, "erro");
+    }
+    const { error } = await sb.from("pedidos").update({ mesa_fechada_em: agora }).in("id", ids);
+    if (error) return aviso(error.message, "erro");
+    if (f.querySelector("#impFech").checked) imprimirContaMesa(c, { forma: forma || c.peds[0].pagamento });
+    f.remove(); aviso(`Mesa ${c.mesa} fechada — livre de novo`, "ok");
+    carregarPedidos(); depois();
+  });
+}
+let timerMesas = null;
 async function telaMesas() {
   const base = new URL("./", location.href).href;
-  C().innerHTML = `<div class="topo-pag">${botaoMenu()}<h1>Pedido na mesa</h1></div>
+  C().innerHTML = `<div class="topo-pag">${botaoMenu()}<h1>Mesas</h1></div>
+    <div class="caixa"><h2>Mesas agora <small class="muted" style="font-weight:400">· toque numa mesa ocupada para ver a conta e fechar</small></h2><div id="mapaMesas" class="mapa-mesas"><p class="muted">Carregando…</p></div></div>
     <div class="caixa"><h2>Configuração</h2>
       <label class="check"><input type="checkbox" id="mAtiva" ${loja.aceita_mesa ? "checked" : ""}><b>Aceitar pedidos pelo QR Code da mesa</b></label>
       <p class="muted">O cliente aponta a câmera, abre o cardápio já com o número da mesa e pede sem precisar de endereço. O pedido chega no quadro com <b>🍽️ MESA</b> em destaque e é pago no caixa.</p>
@@ -2339,6 +2422,16 @@ async function telaMesas() {
   };
   desenharQr();
   $("#mQtd").onchange = desenharQr;
+  const desenharMapa = async () => {
+    if (aba !== "mesas" || !$("#mapaMesas")) { clearInterval(timerMesas); return; }
+    let contas; try { contas = await contasMesas(); } catch (e) { $("#mapaMesas").innerHTML = `<p class="erro">${esc(e.message)}</p>`; return; }
+    const n = Math.max(loja.qtd_mesas || 10, ...[...contas.keys()].map(Number).filter(Number.isFinite));
+    const extras = [...contas.keys()].filter((k) => !/^\d+$/.test(k));
+    $("#mapaMesas").innerHTML = [...Array.from({ length: n }, (_, k) => String(k + 1)), ...extras].map((k) => { const c = contas.get(k);
+      return `<button class="mesa ${c ? "ocupada" : ""}" data-mesa="${esc(k)}" ${c ? "" : "disabled"}><b>${esc(k)}</b>${c ? `<span>${brl(c.total)}</span><small>desde ${hora(c.desde)}${c.aPagar < c.total ? " · parte paga" : ""}</small>` : `<small>livre</small>`}</button>`; }).join("");
+    $("#mapaMesas").querySelectorAll("[data-mesa]").forEach((b) => b.onclick = () => abrirContaMesa(b.dataset.mesa, desenharMapa));
+  };
+  clearInterval(timerMesas); desenharMapa(); timerMesas = setInterval(desenharMapa, 15000);
   $("#mSalvar").onclick = async () => {
     const qtd = Math.min(200, Math.max(1, parseInt($("#mQtd").value) || 10));
     const { error } = await sb.from("loja").update({ aceita_mesa: $("#mAtiva").checked, qtd_mesas: qtd }).eq("id", 1);
