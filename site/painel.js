@@ -64,7 +64,7 @@ $("#trocarSenha").onclick = async () => {
 // Navegação
 // ======================================================================
 const ABAS = { pedidos: telaPedidos, pdv: telaPdv, financeiro: telaFinanceiro, clientes: telaClientes, entregadores: telaEntregadores,
-  cardapio: telaCardapio, cupons: telaCupons, entrega: telaEntrega, loja: telaLoja, avaliacoes: telaAvaliacoes, mesas: telaMesas, whatsapp: telaWhatsapp, vendidos: telaMaisVendidos, apps: telaApps, historico: telaHistorico };
+  cardapio: telaCardapio, cupons: telaCupons, entrega: telaEntrega, loja: telaLoja, avaliacoes: telaAvaliacoes, mesas: telaMesas, whatsapp: telaWhatsapp, vendidos: telaMaisVendidos, apps: telaApps, historico: telaHistorico, fiado: telaFiado, caixa: telaFechamento };
 function irPara(nome) {
   if (!ABAS[nome]) nome = "pedidos";
   aba = nome;
@@ -288,6 +288,7 @@ function seloCanal(p) {
 }
 
 function badgePagamento(p) {
+  if (p.pagamento === "fiado") return p.fiado_pago_em ? `<span class="badge ok">✓ Fiado recebido</span>` : `<span class="badge alerta">📝 FIADO</span>`;
   if (p.pagamento === "pago_app") return `<span class="badge ok">✓ PAGO NO APP</span>`;
   if (p.pagamento_status === "pago") return `<span class="badge ok">✓ PAGO · ${esc(NOMES_PAGAMENTO[p.pagamento])}</span>`;
   if (p.pagamento === "pix_entrega") return `<span class="badge roxo">💠 Pix a confirmar</span>`;
@@ -506,10 +507,11 @@ function cupomHtml(p, via = "") {
       ${ln("TOTAL", brl(p.total), "total")}
     </div>
 
-    <div class="pag ${pago ? "pago" : "cobrar"}">
+    ${p.pagamento === "fiado" ? `<div class="pag pago">📝 FIADO${p.fiado_pago_em ? ` · RECEBIDO ${dataBR(p.fiado_pago_em)}` : ""}<small>Fica na conta do cliente</small></div>
+      <div class="assin">${p.assinatura ? `<img src="${esc(p.assinatura)}" alt="">` : "<br><br>"}<div class="linha-ass">${esc(p.cliente_nome)}</div></div>` : `<div class="pag ${pago ? "pago" : "cobrar"}">
       ${pago ? `✓ PAGO${p.pagamento === "pago_app" ? " NO APP" : ""}<small>${esc(NOMES_PAGAMENTO[p.pagamento] || "")}</small>`
         : `COBRAR ${brl(p.total)}<small>${esc(NOMES_PAGAMENTO[p.pagamento] || "")}</small>`}
-    </div>
+    </div>`}
     ${troco != null && troco > 0 ? `<div class="troco">💵 Troco para ${brl(p.troco_para)}<br>LEVAR <b>${brl(troco)}</b> DE TROCO</div>` : ""}
     ${ent ? `<div class="entregador">Entregador: <b>${esc(ent.nome)}</b></div>` : ""}
     <div class="rodape">Obrigado pela preferência! 😊</div>
@@ -601,6 +603,9 @@ function imprimir(p, { auto = false } = {}) {
     .troco { text-align: center; border: 2px dashed #000; padding: 1.5mm; margin-top: 2mm; font-size: 1.05em; }
     .troco b { font-size: 1.3em; }
     .entregador { margin-top: 2mm; text-align: center; }
+    .assin { text-align: center; margin-top: 1mm; }
+    .assin img { width: 100%; max-height: 22mm; object-fit: contain; filter: grayscale(1) contrast(3); }
+    .linha-ass { border-top: 1px solid #000; font-size: .9em; padding-top: .5mm; }
     .rodape { text-align: center; font-size: .85em; margin-top: 3mm; }
   </style></head><body>${nomesVia.slice(0, Math.max(1, vias)).map((v) => cupomHtml(p, v)).join("")}</body></html>`);
   w.document.close();
@@ -727,6 +732,7 @@ async function carregarIndiceClientes(forcar = false) {
 
 async function telaPdv() {
   const cd = await carregarCardapio();
+  carregarEspeciais().then(() => { if (aba === "pdv") desenharCarrinho(); });
   carregarCardapio(true).then((n) => { if (aba === "pdv") Object.assign(cd, n); });
   carregarIndiceClientes().then(() => { if (aba === "pdv") desenharProdutos(); });
   const bairrosAtivos = () => cd.bairros.filter((b) => b.ativo);
@@ -737,8 +743,11 @@ async function telaPdv() {
   };
   const ehApp = () => APPS_DELIVERY.includes(pdv.origem);
   const subtotal = () => pdv.itens.reduce((s, i) => s + linha(i).total, 0);
+  const especialPdv = () => especialDe(pdv.cliente.tel);
   const taxa = () => {
     if (pdv.tipo !== "entrega") return 0;
+    const ce = especialPdv();
+    if (ce && ce.taxa_entrega != null) return num(ce.taxa_entrega);
     const bs = bairrosAtivos(), b = bs.find((x) => x.id === pdv.cliente.bairro_id);
     return bs.length ? (b ? taxaDoBairro(loja, b) ?? lojaUltimaFaixa() : 0) : num(loja.taxa_entrega);
   };
@@ -780,7 +789,8 @@ async function telaPdv() {
   function desenharCarrinho() {
     const app = ehApp(), sub = subtotal(), tx = taxa(), tot = total();
     const formasPag = app ? [["pago_app", "✓ Pago no app"], ["cartao_entrega", "💳 Cartão"], ["dinheiro", "💵 Dinheiro"]]
-      : [["cartao_entrega", "💳 Cartão"], ["pix_entrega", "💠 Pix"], ["dinheiro", "💵 Dinheiro"]];
+      : [["cartao_entrega", "💳 Cartão"], ["pix_entrega", "💠 Pix"], ["dinheiro", "💵 Dinheiro"], ...(especialPdv()?.permite_fiado === false ? [] : [["fiado", "📝 Fiado"]])];
+    const ce = especialPdv(), devendo = fiadoDe(pdv.cliente.tel);
     if (!formasPag.some(([v]) => v === pdv.pag)) pdv.pag = formasPag[0][0];
     const tipos = [["retirada", "🏪 Retirada"], ["entrega", "🛵 Entrega"], ...(app ? [] : [["mesa", "🍽️ Mesa"]])];
     if (!tipos.some(([v]) => v === pdv.tipo)) pdv.tipo = "retirada";
@@ -799,6 +809,8 @@ async function telaPdv() {
       <div class="grade2"><div><label class="rot">WhatsApp</label><input class="campo" data-f="tel" id="pTel" inputmode="tel" autocomplete="off" value="${esc(pdv.cliente.tel || "")}" placeholder="busca cliente"></div>
         <div><label class="rot">Nome</label><input class="campo" data-f="nome" id="pNome" value="${esc(pdv.cliente.nome || "")}" placeholder="Balcão"></div></div>
       <div id="pSugCli"></div>
+      ${ce ? `<div class="especial-pdv">⭐ <b>Cliente especial</b>${ce.taxa_entrega != null ? ` · entrega <b>${brl(ce.taxa_entrega)}</b>` : ""}${devendo ? ` · deve <b>${brl(devendo)}</b> no fiado` : ""}${ce.obs ? `<br><small>${esc(ce.obs)}</small>` : ""}</div>`
+        : devendo ? `<div class="especial-pdv">📝 Deve <b>${brl(devendo)}</b> no fiado</div>` : ""}
       <div class="seg tres">${tipos.map(([v, t]) => `<button data-tipo="${v}" class="${pdv.tipo === v ? "ativo" : ""}">${t}</button>`).join("")}</div>
       ${pdv.tipo === "mesa" ? `<label class="rot">Número da mesa</label><input class="campo curto" data-f="mesa" inputmode="numeric" value="${esc(pdv.cliente.mesa || "")}">` : ""}
       ${pdv.tipo === "entrega" ? `<label class="rot">Endereço</label><div class="auto"><input class="campo" data-f="end" id="pEnd" autocomplete="off" value="${esc(pdv.cliente.end || "")}" placeholder="digite a rua → escolha → número">
@@ -807,6 +819,8 @@ async function telaPdv() {
           <div id="pBairroLista" class="lista-bairros"></div>` : ""}` : ""}
       <label class="rot">Pagamento</label>
       <div class="seg">${formasPag.map(([v, t]) => `<button data-pag="${v}" class="${pdv.pag === v ? "ativo" : ""}">${t}</button>`).join("")}</div>
+      ${pdv.pag === "fiado" ? `<div class="fiado-pdv">${pdv.assinatura ? `<img src="${pdv.assinatura}" alt="Assinatura"><button class="btn sec peq" id="pAssinar">✍ Assinar de novo</button>`
+        : `<p class="muted" style="margin:0 0 .4rem">O cliente assina na tela (dedo ou mouse). Precisa do WhatsApp e do nome.</p><button class="btn peq" id="pAssinar">✍ Coletar assinatura</button>`}</div>` : ""}
       ${pdv.pag === "dinheiro" ? `<label class="rot">Troco para</label><div class="troco"><input class="campo curto" data-f="troco" data-redesenha inputmode="decimal" value="${esc(pdv.cliente.troco || "")}">
         ${[20, 50, 100, 200].filter((v) => v > tot).slice(0, 3).map((v) => `<button class="btn sec peq" data-troco="${v}">${v}</button>`).join("")}<button class="btn sec peq" data-troco="">sem troco</button></div>
         ${troco != null && troco >= 0 ? `<div class="troco-info">Devolver <b>${brl(troco)}</b></div>` : ""}` : ""}
@@ -887,18 +901,29 @@ async function telaPdv() {
     const app = ehApp();
     if (pdv.tipo === "entrega" && bairrosAtivos().length && !pdv.cliente.bairro_id) return $("#pErro").textContent = "Escolha o bairro da entrega.";
     if (pdv.tipo === "mesa" && !String(pdv.cliente.mesa || "").trim()) return $("#pErro").textContent = "Informe o número da mesa.";
+    if (pdv.pag === "fiado") {
+      const tel = String(pdv.cliente.tel || "").replace(/\D/g, "");
+      if (tel.length < 10) return $("#pErro").textContent = "Para fiado, informe o WhatsApp do cliente (com DDD).";
+      if (!String(pdv.cliente.nome || "").trim()) return $("#pErro").textContent = "Para fiado, informe o nome do cliente.";
+      const ce = especialPdv(), dev = fiadoDe(tel);
+      if (ce?.limite_fiado != null && dev + total() > num(ce.limite_fiado) + 0.001
+        && !(await confirmar("Passa do limite do fiado", `${esc(pdv.cliente.nome)} já deve ${brl(dev)}. Com este pedido fica ${brl(dev + total())} (limite ${brl(ce.limite_fiado)}).`, { botao: "Lançar assim mesmo", cancelar: "Voltar" }))) return;
+      if (!pdv.assinatura) { pdv.assinatura = await pedirAssinatura(pdv.cliente.nome, total()); desenharCarrinho(); if (!pdv.assinatura) return; }
+    }
     if (app && !pdv.cliente.ext && !(await confirmar("Lançar sem o número do pedido?", `Com o número do ${CANAIS[pdv.origem].curto} fica fácil achar o pedido depois e o sistema impede lançar duas vezes.`, { botao: "Lançar assim mesmo", cancelar: "Voltar" }))) return;
     btn.disabled = true; btn.textContent = "Lançando…";
     const corpo = { canal: "balcao", cliente_nome: pdv.cliente.nome || "Balcão", cliente_telefone: pdv.cliente.tel || "", tipo: pdv.tipo, mesa: pdv.cliente.mesa || "",
       endereco: pdv.cliente.end || "", bairro_id: pdv.cliente.bairro_id || null, pagamento: pdv.pag, troco_para: pdv.cliente.troco ? String(pdv.cliente.troco).replace(",", ".") : null,
-      observacao: pdv.cliente.obs || "", itens: pdv.itens, origem: pdv.origem, id_externo: pdv.cliente.ext || "", total_app: app ? (pdv.cliente.totalApp || null) : null };
+      observacao: pdv.cliente.obs || "", itens: pdv.itens, origem: pdv.origem, id_externo: pdv.cliente.ext || "", total_app: app ? (pdv.cliente.totalApp || null) : null,
+      ...(pdv.pag === "fiado" ? { assinatura: pdv.assinatura } : {}) };
     try {
       const { data: { session } } = await sb.auth.getSession();
       const r = await fetch(`${SUPABASE_URL}/functions/v1/criar-pedido`, { method: "POST",
         headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify(corpo) });
       const res = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(res.erro || "Erro ao lançar o pedido.");
-      pdv.itens = []; pdv.cliente = {}; pdv.busca = ""; if (pdv.tipo === "mesa") pdv.tipo = "retirada";
+      pdv.itens = []; pdv.cliente = {}; pdv.busca = ""; pdv.assinatura = null; if (pdv.tipo === "mesa") pdv.tipo = "retirada";
+      if (corpo.pagamento === "fiado") carregarEspeciais(true);
       $("#pBusca").value = ""; desenharCarrinho(); desenharProdutos(); $("#pBusca").focus();
       document.body.classList.remove("pdv-carrinho-aberto");
       carregarPedidos().then(() => {
@@ -930,16 +955,27 @@ async function telaPdv() {
       desenharCarrinho(); const i = $("#pEnd"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); return;
     }
     if (t.id === "pFinalizar") return lancar();
-    if (t.id === "pLimpar") { pdv.itens = []; pdv.cliente = {}; desenharCarrinho(); return desenharProdutos(); }
+    if (t.id === "pAssinar") { pedirAssinatura(pdv.cliente.nome, total()).then((a) => { if (a) pdv.assinatura = a; desenharCarrinho(); }); return; }
+    if (t.id === "pLimpar") { pdv.itens = []; pdv.cliente = {}; pdv.assinatura = null; desenharCarrinho(); return desenharProdutos(); }
     if (t.id === "pBuscaLimpa") { pdv.busca = ""; $("#pBusca").value = ""; $("#pBusca").focus(); return desenharProdutos(); }
     if (t.id === "pBarra") return document.body.classList.add("pdv-carrinho-aberto");
     if (t.id === "pFecharMovel") return document.body.classList.remove("pdv-carrinho-aberto");
   });
+  // escolher bairro/rua na lista sem tirar o foco do campo (senão a tela redesenha antes do clique)
+  raiz.addEventListener("mousedown", (e) => { if (e.target.closest("[data-bairro],[data-rua]")) e.preventDefault(); });
   raiz.addEventListener("input", (e) => {
     const t = e.target;
     if (t.id === "pBusca") { pdv.busca = t.value; return desenharProdutos(); }
     if (t.id === "pBairroBusca") { if (pdv.cliente.bairro_id) { pdv.cliente.bairro_id = null; } return desenharBairros(); }
-    if (t.dataset.f) { pdv.cliente[t.dataset.f] = t.value; if (t.dataset.f === "tel") sugerirCliente(); if (t.dataset.f === "end") sugerirRua(t.value); }
+    if (t.dataset.f) {
+      const antes = t.dataset.f === "tel" ? (especialDe(pdv.cliente.tel)?.telefone || "") + "|" + fiadoDe(pdv.cliente.tel) : null;
+      pdv.cliente[t.dataset.f] = t.value;
+      if (t.dataset.f === "tel") { pdv.assinatura = null; sugerirCliente(); }
+      if (t.dataset.f === "end") sugerirRua(t.value);
+      if (antes != null && antes !== (especialDe(pdv.cliente.tel)?.telefone || "") + "|" + fiadoDe(pdv.cliente.tel)) {
+        const pos = t.selectionStart; desenharCarrinho(); const n = $("#pTel"); if (n) { n.focus(); n.setSelectionRange(pos, pos); }
+      }
+    }
   });
   raiz.addEventListener("change", (e) => {
     if (e.target.dataset.redesenha !== undefined) desenharCarrinho();
@@ -1256,6 +1292,311 @@ async function telaClientes() {
 }
 
 // ======================================================================
+// Clientes especiais e fiado (só a loja vê)
+// ======================================================================
+let especiais = new Map(), fiadoAberto = new Map(), especiaisCarregados = 0;
+const soDigitos = (t) => String(t || "").replace(/\D/g, "");
+const especialDe = (tel) => { const d = soDigitos(tel); return d.length >= 10 ? especiais.get(d) || null : null; };
+const fiadoDe = (tel) => { const d = soDigitos(tel); return d.length >= 10 ? fiadoAberto.get(d)?.total || 0 : 0; };
+async function carregarEspeciais(forcar = false) {
+  if (!forcar && Date.now() - especiaisCarregados < 60000) return;
+  const [e, f] = await Promise.all([
+    sb.from("clientes_especiais").select("*").order("nome"),
+    sb.from("pedidos").select("id,numero,criado_em,cliente_nome,cliente_telefone,total,itens,assinatura,status").eq("pagamento", "fiado").is("fiado_pago_em", null).neq("status", "cancelado").order("criado_em").limit(2000),
+  ]);
+  if (e.error || f.error) return;
+  especiais = new Map((e.data || []).map((c) => [c.telefone, c]));
+  fiadoAberto = new Map();
+  for (const p of f.data || []) {
+    const k = soDigitos(p.cliente_telefone), x = fiadoAberto.get(k) || { tel: k, nome: p.cliente_nome, total: 0, peds: [] };
+    x.total += num(p.total); x.peds.push(p); x.nome = p.cliente_nome; fiadoAberto.set(k, x);
+  }
+  especiaisCarregados = Date.now();
+}
+
+/** Abre a tela de assinatura. Resolve com a imagem (data URL PNG) ou null. */
+function pedirAssinatura(nome, valor) {
+  return new Promise((resolver) => {
+    const f = abrirModal(`<h2 style="margin:0 0 .2rem">✍ Assinatura do fiado</h2>
+      <p class="muted" style="margin:0 0 .6rem">${esc(nome || "Cliente")} · <b>${brl(valor)}</b> — assine com o dedo ou o mouse.</p>
+      <canvas id="tela-ass" class="tela-ass"></canvas>
+      <div style="display:flex;gap:.6rem;justify-content:space-between;margin-top:.8rem"><button class="btn sec" data-limpar>Limpar</button>
+        <span><button class="btn sec" data-nao>Cancelar</button> <button class="btn ok" data-sim>Confirmar assinatura</button></span></div>`, 620);
+    const cv = f.querySelector("canvas"), ctx = cv.getContext("2d");
+    const ajustar = () => { const r = cv.getBoundingClientRect(), k = window.devicePixelRatio || 1; cv.width = Math.round(r.width * k); cv.height = Math.round(r.height * k);
+      ctx.setTransform(k, 0, 0, k, 0, 0); ctx.lineWidth = 2.6; ctx.lineCap = ctx.lineJoin = "round"; ctx.strokeStyle = "#000"; };
+    requestAnimationFrame(ajustar);
+    let desenhando = false, riscos = 0, ult = null;
+    const pt = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    cv.addEventListener("pointerdown", (e) => { desenhando = true; ult = pt(e); cv.setPointerCapture(e.pointerId); ctx.beginPath(); ctx.arc(ult[0], ult[1], 1.2, 0, 7); ctx.fill(); e.preventDefault(); });
+    cv.addEventListener("pointermove", (e) => { if (!desenhando) return; const p = pt(e); ctx.beginPath(); ctx.moveTo(...ult); ctx.lineTo(...p); ctx.stroke(); ult = p; riscos++; e.preventDefault(); });
+    const parar = () => { desenhando = false; };
+    cv.addEventListener("pointerup", parar); cv.addEventListener("pointercancel", parar);
+    const fechar = (v) => { f.remove(); resolver(v); };
+    f.querySelector(".fechar").addEventListener("click", () => resolver(null));
+    f.querySelector("[data-limpar]").onclick = () => { ctx.clearRect(0, 0, cv.width, cv.height); riscos = 0; };
+    f.querySelector("[data-nao]").onclick = () => fechar(null);
+    f.querySelector("[data-sim]").onclick = () => {
+      if (riscos < 8) return aviso("Faça a assinatura no quadro", "erro");
+      // reduz para ~500px de largura com fundo branco (fica leve para guardar e imprimir)
+      const larg = Math.min(500, cv.width), alt = Math.round(cv.height * larg / cv.width);
+      const c2 = document.createElement("canvas"); c2.width = larg; c2.height = alt;
+      const x = c2.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, larg, alt); x.drawImage(cv, 0, 0, larg, alt);
+      fechar(c2.toDataURL("image/png"));
+    };
+  });
+}
+
+function verAssinatura(p) {
+  abrirModal(`<h2 style="margin:0 0 .3rem">Pedido #${p.numero} · ${esc(p.cliente_nome)}</h2>
+    <p class="muted" style="margin:0 0 .6rem">${dataBR(p.criado_em)} às ${hora(p.criado_em)} · <b>${brl(p.total)}</b></p>
+    <div style="font-size:.9rem;margin-bottom:.6rem">${(p.itens || []).map((i) => `${i.quantidade}x ${esc(i.nome)}`).join("<br>")}</div>
+    ${p.assinatura ? `<img src="${esc(p.assinatura)}" alt="Assinatura" style="width:100%;border:1px solid var(--linha);border-radius:8px;background:#fff">` : `<p class="vazio">Sem assinatura</p>`}
+    <div style="margin-top:.8rem;text-align:right"><button class="btn sec" data-imp-ped>🖨 Imprimir comprovante</button></div>`, 560)
+    .querySelector("[data-imp-ped]").onclick = async () => {
+      const { data } = await sb.from("pedidos").select("*").eq("id", p.id).single();
+      if (data) imprimir(data);
+    };
+}
+
+const FORMAS_RECEBER = [["dinheiro", "💵 Dinheiro"], ["pix_entrega", "💠 Pix"], ["cartao_entrega", "💳 Cartão"]];
+async function receberFiado(peds, nome) {
+  const total = peds.reduce((s, p) => s + num(p.total), 0);
+  const forma = await new Promise((ok) => {
+    const f = abrirModal(`<h2 style="margin:0 0 .3rem">Receber fiado</h2>
+      <p class="muted" style="margin:0 0 .8rem">${esc(nome)} · ${peds.length} pedido${peds.length === 1 ? "" : "s"} · <b>${brl(total)}</b><br>Como o cliente pagou?</p>
+      <div class="seg">${FORMAS_RECEBER.map(([v, t]) => `<button data-f="${v}">${t}</button>`).join("")}</div>`, 420);
+    f.querySelectorAll("[data-f]").forEach((b) => b.onclick = () => { f.remove(); ok(b.dataset.f); });
+    f.querySelector(".fechar").addEventListener("click", () => ok(null));
+  });
+  if (!forma) return false;
+  const { error } = await sb.from("pedidos").update({ fiado_pago_em: new Date().toISOString(), fiado_pago_como: forma, pagamento_status: "pago" }).in("id", peds.map((p) => p.id));
+  if (error) { aviso(error.message, "erro"); return false; }
+  aviso(`Recebido ${brl(total)} de ${nome}`, "ok");
+  return true;
+}
+
+async function telaFiado() {
+  C().innerHTML = `<div class="topo-pag">${botaoMenu()}<h1>Fiado e clientes especiais</h1><button class="btn" id="novoEsp">+ Cliente especial</button></div><div id="fiCorpo"><p class="muted">Carregando…</p></div>`;
+  await carregarEspeciais(true);
+  const desde = new Date(hoje0()); desde.setDate(desde.getDate() - 30);
+  const { data: recebidos } = await sb.from("pedidos").select("id,numero,cliente_nome,total,fiado_pago_em,fiado_pago_como").eq("pagamento", "fiado").gte("fiado_pago_em", desde.toISOString()).order("fiado_pago_em", { ascending: false }).limit(200);
+  const devedores = [...fiadoAberto.values()].sort((a, b) => b.total - a.total);
+  const totalAberto = devedores.reduce((s, d) => s + d.total, 0);
+  const esp = [...especiais.values()];
+  $("#fiCorpo").innerHTML = `<div class="kpis"><div class="kpi"><span>Fiado em aberto</span><b style="color:${totalAberto ? "var(--alerta)" : "inherit"}">${brl(totalAberto)}</b><small>${devedores.length} cliente(s)</small></div>
+      <div class="kpi"><span>Recebido nos últimos 30 dias</span><b>${brl((recebidos || []).reduce((s, p) => s + num(p.total), 0))}</b><small>${(recebidos || []).length} pedidos</small></div>
+      <div class="kpi"><span>Clientes especiais</span><b>${esp.length}</b><small>taxa de entrega própria</small></div></div>
+    <div class="caixa"><h2>📝 Quem está devendo</h2>
+      ${devedores.length ? devedores.map((d) => `<div class="devedor" data-tel="${esc(d.tel)}">
+        <div class="ent-topo"><div><b>${esc(d.nome)}</b> <span class="muted">${esc(foneBonito(d.tel))}</span><br><span class="muted">${d.peds.length} pedido(s) · desde ${dataBR(d.peds[0].criado_em)}</span>
+          ${especiais.get(d.tel)?.limite_fiado != null ? `<span class="muted"> · limite ${brl(especiais.get(d.tel).limite_fiado)}</span>` : ""}</div>
+          <div class="acs"><b style="font-size:1.15rem">${brl(d.total)}</b> <button class="btn sec peq" data-ver-dev>Ver</button> <button class="btn sec peq" data-cobrar title="Mandar a conta no WhatsApp">💬 Cobrar</button> <button class="btn ok peq" data-receber-tudo>Receber tudo</button></div></div>
+        <div class="ent-lista oculto"><table class="t"><tr><th>#</th><th>Data</th><th>Itens</th><th class="num">Valor</th><th></th></tr>
+          ${d.peds.map((p) => `<tr data-p="${p.id}"><td>#${p.numero}</td><td>${dataBR(p.criado_em).slice(0, 5)} ${hora(p.criado_em)}</td><td>${esc((p.itens || []).map((i) => `${i.quantidade}x ${i.nome}`).join(", "))}</td><td class="num">${brl(p.total)}</td>
+            <td style="white-space:nowrap"><button class="btn sec peq" data-ass>✍ Assinatura</button> <button class="btn sec peq" data-receber-um>Receber</button></td></tr>`).join("")}</table></div></div>`).join("")
+        : `<p class="vazio">Ninguém devendo 🎉</p>`}
+      <p class="muted" style="margin-bottom:0">O fiado é lançado na tela <b>Lançar pedido</b>, forma de pagamento <b>📝 Fiado</b>: o cliente assina na tela e a assinatura sai no cupom.</p></div>
+    <div class="caixa"><h2>⭐ Clientes especiais</h2>
+      <p class="muted" style="margin-top:0">Pagam uma taxa de entrega diferente da do bairro. Vale no <b>Lançar pedido</b> e também quando eles pedem pelo cardápio (o cliente não vê esta lista). Deixe a taxa vazia para usar a do bairro.</p>
+      <table class="t"><tr><th>Nome</th><th>WhatsApp</th><th class="num">Taxa de entrega</th><th>Fiado</th><th class="num">Limite fiado</th><th>Observação</th><th></th></tr>
+      ${esp.map((c) => `<tr data-esp="${esc(c.telefone)}"><td><b>${esc(c.nome)}</b></td><td>${esc(foneBonito(c.telefone))}</td><td class="num">${c.taxa_entrega == null ? `<span class="muted">do bairro</span>` : brl(c.taxa_entrega)}</td>
+        <td>${c.permite_fiado ? "✓ pode" : "✗ não"}</td><td class="num">${c.limite_fiado == null ? "—" : brl(c.limite_fiado)}</td><td>${esc(c.obs || "")}</td>
+        <td style="white-space:nowrap"><button class="btn sec peq" data-edit-esp>Editar</button> <button class="btn perigo peq" data-apagar-esp>×</button></td></tr>`).join("") || `<tr><td colspan="7" class="vazio">Nenhum cliente especial ainda</td></tr>`}</table></div>
+    ${(recebidos || []).length ? `<div class="caixa"><h2>Recebidos (30 dias)</h2><table class="t"><tr><th>Quando</th><th>#</th><th>Cliente</th><th>Como</th><th class="num">Valor</th></tr>
+      ${recebidos.map((p) => `<tr><td>${dataBR(p.fiado_pago_em).slice(0, 5)} ${hora(p.fiado_pago_em)}</td><td>#${p.numero}</td><td>${esc(p.cliente_nome)}</td><td>${esc(NOMES_PAGAMENTO[p.fiado_pago_como] || p.fiado_pago_como || "")}</td><td class="num">${brl(p.total)}</td></tr>`).join("")}</table></div>` : ""}`;
+
+  const dev = (el) => fiadoAberto.get(el.closest("[data-tel]").dataset.tel);
+  C().querySelectorAll("[data-ver-dev]").forEach((b) => b.onclick = () => { const l = b.closest(".devedor").querySelector(".ent-lista"); l.classList.toggle("oculto"); b.textContent = l.classList.contains("oculto") ? "Ver" : "Esconder"; });
+  C().querySelectorAll("[data-ass]").forEach((b) => b.onclick = () => { const d = dev(b); verAssinatura(d.peds.find((p) => p.id === b.closest("[data-p]").dataset.p)); });
+  C().querySelectorAll("[data-receber-tudo]").forEach((b) => b.onclick = async () => { const d = dev(b); if (await receberFiado(d.peds, d.nome)) telaFiado(); });
+  C().querySelectorAll("[data-receber-um]").forEach((b) => b.onclick = async () => { const d = dev(b); if (await receberFiado([d.peds.find((p) => p.id === b.closest("[data-p]").dataset.p)], d.nome)) telaFiado(); });
+  C().querySelectorAll("[data-cobrar]").forEach((b) => b.onclick = () => {
+    const d = dev(b);
+    const msg = [`Olá, ${d.nome.split(" ")[0]}! Aqui é da ${loja.nome} 😊`, `Segue a sua conta do fiado:`, "", ...d.peds.map((p) => `• ${dataBR(p.criado_em).slice(0, 5)} — pedido #${p.numero}: ${brl(p.total)}`), "", `*Total: ${brl(d.total)}*`].join("\n");
+    window.open(`https://wa.me/${foneWhats(d.tel)}?text=${encodeURIComponent(msg)}`, "_blank");
+  });
+  const editar = async (c) => {
+    const r = await formulario({ titulo: c ? "Editar cliente especial" : "Novo cliente especial", campos: [
+      { nome: "nome", rotulo: "Nome", valor: c?.nome || "", placeholder: "Ex.: Dona Maria" },
+      { nome: "telefone", rotulo: "WhatsApp", tipo: "tel", valor: c?.telefone || "", placeholder: "(43) 99999-9999", dica: "É pelo número que o sistema reconhece o cliente." },
+      { nome: "taxa", rotulo: "Taxa de entrega especial", tipo: "number", prefixo: "R$", opcional: true, valor: c?.taxa_entrega == null ? "" : String(c.taxa_entrega).replace(".", ","), placeholder: "vazio = taxa do bairro · 0 = grátis" },
+      { nome: "fiado", rotulo: "Fiado", tipo: "select", valor: c && !c.permite_fiado ? "nao" : "sim", opcoes: [["sim", "Pode comprar fiado"], ["nao", "Não pode comprar fiado"]] },
+      { nome: "limite", rotulo: "Limite do fiado", tipo: "number", prefixo: "R$", opcional: true, valor: c?.limite_fiado == null ? "" : String(c.limite_fiado).replace(".", ","), placeholder: "vazio = sem limite" },
+      { nome: "obs", rotulo: "Observação (só vocês veem)", opcional: true, valor: c?.obs || "" }], botao: "Salvar" });
+    if (!r) return;
+    const tel = soDigitos(r.telefone);
+    if (tel.length < 10) return aviso("WhatsApp com DDD", "erro");
+    const taxa = r.taxa, limite = r.limite;
+    if ((taxa != null && !(taxa >= 0)) || (limite != null && !(limite >= 0))) return aviso("Valor inválido", "erro");
+    const reg = { telefone: tel, nome: r.nome.trim(), taxa_entrega: taxa, limite_fiado: limite, permite_fiado: r.fiado !== "nao", obs: (r.obs || "").trim() || null };
+    if (c && c.telefone !== tel) await sb.from("clientes_especiais").delete().eq("telefone", c.telefone);
+    const { error } = await sb.from("clientes_especiais").upsert(reg);
+    if (error) return aviso(error.message, "erro");
+    aviso("Cliente especial salvo", "ok"); telaFiado();
+  };
+  $("#novoEsp").onclick = () => editar(null);
+  C().querySelectorAll("[data-edit-esp]").forEach((b) => b.onclick = () => editar(especiais.get(b.closest("[data-esp]").dataset.esp)));
+  C().querySelectorAll("[data-apagar-esp]").forEach((b) => b.onclick = async () => {
+    const c = especiais.get(b.closest("[data-esp]").dataset.esp);
+    if (!(await confirmar(`Tirar ${esc(c.nome)} dos especiais?`, "Os pedidos e o fiado dele continuam registrados.", { botao: "Tirar", perigo: true }))) return;
+    const { error } = await sb.from("clientes_especiais").delete().eq("telefone", c.telefone); if (error) return aviso(error.message, "erro");
+    telaFiado();
+  });
+}
+
+// ======================================================================
+// Fechamento de caixa (loja + entregadores) — impresso
+// ======================================================================
+const fech = { dia: "" };
+const lerFechAuto = () => { try { return localStorage.getItem("fechAuto") || ""; } catch { return ""; } };
+const diaISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+async function dadosFechamento(diaStr) {
+  const [y, m, d] = diaStr.split("-").map(Number);
+  const ini = new Date(y, m - 1, d), fim = new Date(y, m - 1, d + 1);
+  await carregarEntregadores();
+  const [pr, fr] = await Promise.all([
+    buscarTodos(() => sb.from("pedidos").select("id,numero,criado_em,status,canal,tipo,subtotal,taxa_entrega,desconto,total,pagamento,pagamento_status,entregador_id,fiado_pago_em")
+      .gte("criado_em", ini.toISOString()).lt("criado_em", fim.toISOString()).order("criado_em")),
+    sb.from("pedidos").select("id,numero,cliente_nome,total,fiado_pago_como").eq("pagamento", "fiado").gte("fiado_pago_em", ini.toISOString()).lt("fiado_pago_em", fim.toISOString()),
+  ]);
+  if (fr.error) throw fr.error;
+  const validos = pr.filter((p) => !["cancelado", "aguardando_pagamento"].includes(p.status));
+  const cancelados = pr.filter((p) => p.status === "cancelado");
+  const soma = (a, f = "total") => a.reduce((s, p) => s + num(p[f]), 0);
+  const porPag = {}; for (const p of validos) { const x = porPag[p.pagamento] || (porPag[p.pagamento] = { n: 0, v: 0 }); x.n++; x.v += num(p.total); }
+  const porCanal = {}; for (const p of validos) { const k = CANAIS[p.canal]?.nome || p.canal; const x = porCanal[k] || (porCanal[k] = { n: 0, v: 0 }); x.n++; x.v += num(p.total); }
+  const fiadoRec = {}; for (const p of fr.data || []) { const x = fiadoRec[p.fiado_pago_como] || (fiadoRec[p.fiado_pago_como] = { n: 0, v: 0 }); x.n++; x.v += num(p.total); }
+  const entregas = validos.filter((p) => p.tipo === "entrega");
+  const cobrar = (p) => p.pagamento_status !== "pago" && p.pagamento !== "pago_app" && p.pagamento !== "fiado";
+  const ents = entregadores.map((e) => {
+    const ps = entregas.filter((p) => p.entregador_id === e.id);
+    return { e, n: ps.length, taxas: soma(ps, "taxa_entrega"), fixo: num(e.valor_fixo), porEnt: num(e.valor_por_entrega),
+      dinheiro: soma(ps.filter((p) => cobrar(p) && p.pagamento === "dinheiro")), cartao: soma(ps.filter((p) => cobrar(p) && p.pagamento === "cartao_entrega")) };
+  });
+  const semEnt = entregas.filter((p) => !p.entregador_id || !entregadores.some((e) => e.id === p.entregador_id)).length;
+  return { diaStr, ini, validos, cancelados, porPag, porCanal, fiadoRec, fiadoRecList: fr.data || [], ents, semEnt,
+    fat: soma(validos), sub: soma(validos, "subtotal"), taxas: soma(validos, "taxa_entrega"), desc: soma(validos, "desconto"), nEntregas: entregas.length,
+    fiadoDado: soma(validos.filter((p) => p.pagamento === "fiado")) };
+}
+// trabalhou = recebe o fixo do dia (padrão: quem fez entrega)
+const pagoEntregador = (x, trabalhou) => (trabalhou ? x.fixo : 0) + x.n * x.porEnt;
+
+function imprimirFechamento(D, { trabalharam, contado = null } = {}) {
+  const { papel } = confImp(), larg = papel === "58" ? 48 : 72;
+  const ln = (a, b, cls = "") => `<div class="ln ${cls}"><span>${a}</span><span>${b}</span></div>`;
+  const ord = ["dinheiro", "cartao_entrega", "pix_entrega", "pix_online", "cartao_online", "pago_app", "fiado"];
+  const pags = Object.entries(D.porPag).sort((a, b) => ord.indexOf(a[0]) - ord.indexOf(b[0]));
+  const trab = (x) => trabalharam ? trabalharam.has(x.e.id) : x.n > 0;
+  const ents = D.ents.filter((x) => x.n || trab(x));
+  const totEnt = ents.reduce((s, x) => s + pagoEntregador(x, trab(x)), 0);
+  const dinVendas = D.porPag.dinheiro?.v || 0, dinFiado = D.fiadoRec.dinheiro?.v || 0;
+  const esperado = dinVendas + dinFiado - totEnt;
+  const agora = new Date();
+  const w = quadroImpressao(papel); w.document.open();
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Fechamento ${dataBR(D.ini)}</title><style>
+    @page { size: ${papel}mm auto; margin: 2mm; } * { box-sizing: border-box; }
+    body { margin: 0; width: ${larg}mm; font: ${papel === "58" ? 11.5 : 12.5}px/1.35 Arial, Helvetica, sans-serif; color: #000; }
+    h1 { font-size: 1.35em; text-align: center; margin: 0; } .c { text-align: center; }
+    .t { font-weight: 900; font-size: .9em; letter-spacing: .12em; border-bottom: 2px solid #000; margin: 3mm 0 1mm; }
+    .ln { display: flex; justify-content: space-between; gap: 2mm; padding: .4mm 0; } .ln span:last-child { white-space: nowrap; }
+    .ln.d { border-bottom: 1px dotted #888; } .tot { font-weight: 900; font-size: 1.15em; border-top: 1.5px solid #000; margin-top: .8mm; padding-top: .8mm; }
+    .sub { padding-left: 3mm; font-size: .92em; } .ent { border: 1px solid #000; padding: 1.2mm; margin-top: 1.5mm; }
+    .grande { font-size: 1.3em; font-weight: 900; } .ass { margin-top: 8mm; text-align: center; border-top: 1px solid #000; font-size: .9em; }
+  </style></head><body>
+    <h1>FECHAMENTO DE CAIXA</h1><div class="c"><b>${esc(loja.nome)}</b><br>${DIAS[D.ini.getDay()]}, ${dataBR(D.ini)}<br><small>impresso ${dataBR(agora)} ${hora(agora)}</small></div>
+    <div class="t">LOJA</div>
+    ${ln("Pedidos", D.validos.length)}${ln("Produtos", brl(D.sub))}${ln(`Taxas de entrega (${D.nEntregas})`, brl(D.taxas))}${D.desc ? ln("Descontos", "−" + brl(D.desc)) : ""}
+    ${ln("FATURAMENTO", brl(D.fat), "tot")}${ln("Ticket médio", brl(D.validos.length ? D.fat / D.validos.length : 0))}
+    ${D.cancelados.length ? ln(`Cancelados (${D.cancelados.length})`, brl(D.cancelados.reduce((s, p) => s + num(p.total), 0))) : ""}
+    <div class="t">FORMAS DE PAGAMENTO</div>
+    ${pags.map(([k, x]) => ln(`${esc(NOMES_PAGAMENTO[k] || k)} (${x.n})`, brl(x.v), "d")).join("") || ln("—", "")}
+    <div class="t">CANAIS</div>
+    ${Object.entries(D.porCanal).map(([k, x]) => ln(`${esc(k)} (${x.n})`, brl(x.v), "d")).join("") || ln("—", "")}
+    <div class="t">FIADO</div>
+    ${ln("Vendido no fiado hoje", brl(D.fiadoDado))}
+    ${Object.keys(D.fiadoRec).length ? Object.entries(D.fiadoRec).map(([k, x]) => ln(`Recebido · ${esc(NOMES_PAGAMENTO[k] || k)} (${x.n})`, brl(x.v))).join("") : ln("Recebido hoje", brl(0))}
+    <div class="t">ENTREGADORES</div>
+    ${ents.map((x) => `<div class="ent"><b>${esc(x.e.nome)}</b>
+      ${ln(`${x.n} entrega${x.n === 1 ? "" : "s"} × ${brl(x.porEnt)}`, brl(x.n * x.porEnt), "sub")}
+      ${ln("Fixo do dia", trab(x) ? brl(x.fixo) : "—", "sub")}
+      ${ln("A RECEBER", brl(pagoEntregador(x, trab(x))), "tot")}
+      ${x.dinheiro || x.cartao ? `<div class="sub">Trouxe: ${x.dinheiro ? "💵 " + brl(x.dinheiro) : ""}${x.dinheiro && x.cartao ? " · " : ""}${x.cartao ? "💳 maquininha " + brl(x.cartao) : ""}</div>` : ""}
+      <div class="ass">${esc(x.e.nome)}</div></div>`).join("") || `<div class="c">Nenhuma entrega</div>`}
+    ${D.semEnt ? `<div class="c" style="margin-top:1mm">⚠ ${D.semEnt} entrega(s) sem entregador escolhido</div>` : ""}
+    ${ents.length ? ln("TOTAL ENTREGADORES", brl(totEnt), "tot") : ""}
+    <div class="t">DINHEIRO NO CAIXA</div>
+    ${ln("Vendas em dinheiro", brl(dinVendas))}${dinFiado ? ln("Fiado recebido em dinheiro", brl(dinFiado)) : ""}${totEnt ? ln("Pago aos entregadores", "−" + brl(totEnt)) : ""}
+    ${ln("ESPERADO NA GAVETA", brl(esperado), "tot")}
+    ${contado != null ? `${ln("Contado", brl(contado))}${ln(contado - esperado >= 0 ? "SOBRA" : "FALTA", brl(Math.abs(contado - esperado)), "grande")}` : ""}
+    <div class="c" style="font-size:.85em;margin-top:1mm">(sem contar o troco que já estava na gaveta)</div>
+    <div class="ass" style="margin-top:12mm">Responsável</div>
+  </body></html>`);
+  w.document.close(); mandarParaImpressora(w);
+}
+
+async function telaFechamento() {
+  if (!fech.dia) fech.dia = diaISO(new Date());
+  C().innerHTML = `<div class="topo-pag">${botaoMenu()}<h1>Fechamento de caixa</h1><input type="date" class="campo" id="fcDia" style="width:auto" value="${fech.dia}"></div><div id="fcCorpo"><p class="muted">Carregando…</p></div>`;
+  $("#fcDia").onchange = (e) => { fech.dia = e.target.value || diaISO(new Date()); telaFechamento(); };
+  let D;
+  try { D = await dadosFechamento(fech.dia); } catch (e) { $("#fcCorpo").innerHTML = `<p class="erro">${esc(e.message)}</p>`; return; }
+  const trabalharam = new Set(D.ents.filter((x) => x.n > 0).map((x) => x.e.id));
+  const ativos = D.ents.filter((x) => x.n || x.e.ativo);
+  const auto = lerFechAuto();
+  const desenhar = () => {
+    const totEnt = ativos.reduce((s, x) => s + pagoEntregador(x, trabalharam.has(x.e.id)), 0);
+    const din = (D.porPag.dinheiro?.v || 0) + (D.fiadoRec.dinheiro?.v || 0);
+    $("#fcCorpo").innerHTML = `<div class="kpis">
+        <div class="kpi"><span>Faturamento</span><b>${brl(D.fat)}</b><small>${D.validos.length} pedidos</small></div>
+        <div class="kpi"><span>Entregadores (a pagar)</span><b>${brl(totEnt)}</b><small>${D.nEntregas} entregas</small></div>
+        <div class="kpi"><span>Fiado</span><b>${brl(D.fiadoDado)}</b><small>recebido ${brl(Object.values(D.fiadoRec).reduce((s, x) => s + x.v, 0))}</small></div>
+        <div class="kpi"><span>Esperado na gaveta (dinheiro)</span><b>${brl(din - totEnt)}</b><small>vendas + fiado em dinheiro − entregadores</small></div></div>
+      <div class="grade2" style="gap:1rem">
+        <div class="caixa"><h2>Formas de pagamento</h2>${barrasH(Object.entries(D.porPag).map(([k, x]) => ({ k: NOMES_PAGAMENTO[k] || k, v: x.v, extra: `${x.n} pedidos` })).sort((a, b) => b.v - a.v))}</div>
+        <div class="caixa"><h2>Canais</h2>${barrasH(Object.entries(D.porCanal).map(([k, x]) => ({ k, v: x.v, extra: `${x.n} pedidos` })).sort((a, b) => b.v - a.v))}</div></div>
+      <div class="caixa"><h2>🛵 Entregadores</h2>
+        <table class="t"><tr><th>Trabalhou</th><th>Entregador</th><th class="num">Entregas</th><th class="num">Por entrega</th><th class="num">Fixo</th><th class="num">A receber</th><th class="num">Trouxe</th></tr>
+        ${ativos.map((x) => `<tr><td><input type="checkbox" data-trab="${x.e.id}" ${trabalharam.has(x.e.id) ? "checked" : ""}></td><td><b>${esc(x.e.nome)}</b></td><td class="num">${x.n}</td>
+          <td class="num">${brl(x.n * x.porEnt)} <small class="muted">(${brl(x.porEnt)})</small></td><td class="num">${trabalharam.has(x.e.id) ? brl(x.fixo) : "—"}</td>
+          <td class="num"><b>${brl(pagoEntregador(x, trabalharam.has(x.e.id)))}</b></td><td class="num">${x.dinheiro ? "💵 " + brl(x.dinheiro) : ""}${x.cartao ? " 💳 " + brl(x.cartao) : ""}</td></tr>`).join("")
+          || `<tr><td colspan="7" class="vazio">Nenhum entregador</td></tr>`}</table>
+        ${D.semEnt ? `<p class="erro" style="margin:.5rem 0 0">⚠ ${D.semEnt} entrega(s) sem entregador escolhido — não entram na conta de ninguém.</p>` : ""}
+        <p class="muted" style="margin-bottom:0">Valores de cada entregador (fixo por dia e valor por entrega) ficam na aba <b>Entregadores</b>. Marque quem trabalhou para somar o fixo.</p></div>
+      <div class="caixa"><h2>🖨 Imprimir</h2>
+        <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:end">
+          <div><label class="rot">Dinheiro contado na gaveta <span class="muted">(opcional)</span></label><input class="campo curto" id="fcContado" inputmode="decimal" placeholder="0,00"></div>
+          <button class="btn grande" id="fcImprimir">🖨 Fechar caixa e imprimir</button></div>
+        <hr style="border:0;border-top:1px solid var(--linha);margin:1rem 0">
+        <label class="check"><input type="checkbox" id="fcAuto" ${auto ? "checked" : ""}> Imprimir sozinho todo dia neste computador às</label>
+        <input type="time" class="campo" id="fcHora" style="width:auto" value="${auto || "15:00"}">
+        <p class="muted" style="margin-bottom:0">Funciona com o painel aberto neste computador (sai uma vez por dia; se o painel abrir depois do horário, imprime assim que abrir). Os entregadores que entram no fixo são os que fizeram entrega.</p></div>`;
+    C().querySelectorAll("[data-trab]").forEach((c) => c.onchange = () => { c.checked ? trabalharam.add(c.dataset.trab) : trabalharam.delete(c.dataset.trab); desenhar(); });
+    $("#fcImprimir").onclick = () => {
+      const v = $("#fcContado").value.trim(), contado = v ? Number(v.replace(/\./g, "").replace(",", ".")) : null;
+      imprimirFechamento(D, { trabalharam, contado: Number.isFinite(contado) ? contado : null });
+    };
+    const salvarAuto = () => { try { localStorage.setItem("fechAuto", $("#fcAuto").checked ? ($("#fcHora").value || "15:00") : ""); if ($("#fcAuto").checked) localStorage.setItem("fechFeito", diaISO(new Date()) + (agoraHHMM() >= $("#fcHora").value ? "" : "x")); } catch {} aviso($("#fcAuto").checked ? `Vai imprimir sozinho às ${$("#fcHora").value}` : "Impressão automática desligada", "ok"); };
+    $("#fcAuto").onchange = salvarAuto; $("#fcHora").onchange = () => { if ($("#fcAuto").checked) salvarAuto(); };
+  };
+  desenhar();
+}
+const agoraHHMM = () => { const d = new Date(); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+// confere a cada minuto se já é hora do fechamento automático
+async function conferirFechamentoAuto() {
+  const h = lerFechAuto(); if (!h || !loja) return;
+  if (!(await sb.auth.getSession()).data.session) return;
+  const hoje = diaISO(new Date());
+  let feito = ""; try { feito = localStorage.getItem("fechFeito") || ""; } catch {}
+  if (feito === hoje || agoraHHMM() < h) return;
+  try { localStorage.setItem("fechFeito", hoje); } catch {}
+  try { imprimirFechamento(await dadosFechamento(hoje)); aviso("🖨 Fechamento de caixa impresso", "ok"); }
+  catch (e) { try { localStorage.setItem("fechFeito", ""); } catch {} console.error(e); }
+}
+setInterval(conferirFechamentoAuto, 60000);
+
+// ======================================================================
 // Entregadores
 // ======================================================================
 const perEnt = { tipo: "hoje", dia: "", mes: "" };
@@ -1282,12 +1623,15 @@ async function telaEntregadores() {
         <label class="chip-data ${perEnt.tipo === "escolhermes" ? "ativo" : ""}">🗓 Mês <input type="month" id="peMes" value="${perEnt.mes}"></label></div>
       <h2 style="margin:.8rem 0 0">${esc(rotulo)}</h2></div>
     <div id="entRel"><p class="muted">Carregando…</p></div>
-    <div class="caixa"><h2>Cadastro</h2><table class="t"><tr><th>Nome</th><th>WhatsApp</th><th>Ativo</th><th></th></tr>
+    <div class="caixa"><h2>Cadastro</h2><table class="t"><tr><th>Nome</th><th>WhatsApp</th><th>Fixo por dia</th><th>Por entrega</th><th>Ativo</th><th></th></tr>
     ${entregadores.map((e) => `<tr data-e="${e.id}">
       <td><input class="campo" data-c="nome" value="${esc(e.nome)}"></td><td><input class="campo" data-c="telefone" value="${esc(e.telefone)}" placeholder="43999999999"></td>
+      <td><input class="campo curto" data-c="valor_fixo" inputmode="decimal" value="${num(e.valor_fixo) ? String(num(e.valor_fixo).toFixed(2)).replace(".", ",") : ""}" placeholder="0,00"></td>
+      <td><input class="campo curto" data-c="valor_por_entrega" inputmode="decimal" value="${num(e.valor_por_entrega) ? String(num(e.valor_por_entrega).toFixed(2)).replace(".", ",") : ""}" placeholder="0,00"></td>
       <td><input type="checkbox" data-c="ativo" ${e.ativo ? "checked" : ""}></td>
-      <td style="white-space:nowrap"><button class="btn sec peq" data-salvar>Salvar</button> ${e.token ? `<button class="btn sec peq" data-link title="Copiar o link do entregador">🔗 Link</button> ${e.telefone ? `<button class="btn peq" data-link-zap>📲 Enviar link</button>` : ""}` : ""} <button class="btn perigo peq" data-apagar>×</button></td></tr>`).join("") || `<tr><td colspan="4" class="vazio">Cadastre seus entregadores para escolher quem leva cada pedido.</td></tr>`}
-    </table><p class="muted" style="margin-bottom:0">Só entram na conta do entregador os pedidos em que ele foi escolhido no card do pedido.
+      <td style="white-space:nowrap"><button class="btn sec peq" data-salvar>Salvar</button> ${e.token ? `<button class="btn sec peq" data-link title="Copiar o link do entregador">🔗 Link</button> ${e.telefone ? `<button class="btn peq" data-link-zap>📲 Enviar link</button>` : ""}` : ""} <button class="btn perigo peq" data-apagar>×</button></td></tr>`).join("") || `<tr><td colspan="6" class="vazio">Cadastre seus entregadores para escolher quem leva cada pedido.</td></tr>`}
+    </table><p class="muted" style="margin-bottom:0">💰 <b>Fixo por dia</b> + <b>por entrega</b>: é o que ele ganha. Entra no <b>Fechamento de caixa</b> e no resumo abaixo (o fixo conta nos dias em que ele fez entrega).
+      <br>Só entram na conta do entregador os pedidos em que ele foi escolhido no card do pedido.
       <br>🔗 <b>Link do entregador:</b> ele abre no celular, vê as entregas dele, avisa que saiu e <b>finaliza com o código</b> que o cliente recebe. Não precisa de senha — não compartilhe o link com outras pessoas.</p></div>`;
 
   C().querySelectorAll("[data-pe]").forEach((b) => b.onclick = () => { perEnt.tipo = b.dataset.pe; telaEntregadores(); });
@@ -1313,6 +1657,7 @@ async function telaEntregadores() {
   const grupos = [...entregadores.map((e) => ({ e, ps: peds.filter((p) => p.entregador_id === e.id) })),
     { e: { id: "", nome: "Sem entregador escolhido", telefone: "" }, ps: peds.filter((p) => !p.entregador_id || !entregadores.some((x) => x.id === p.entregador_id)) }]
     .filter((g) => g.e.id || g.ps.length);
+  const ganho = (e, ps) => { const dias = new Set(ps.map((p) => dataBR(p.criado_em))).size; return { dias, valor: dias * num(e.valor_fixo) + ps.length * num(e.valor_por_entrega) }; };
   const resumo = (ps) => ({ n: ps.length, total: ps.reduce((s, p) => s + num(p.total), 0), taxas: ps.reduce((s, p) => s + num(p.taxa_entrega), 0),
     dinheiro: ps.filter((p) => cobrar(p) && p.pagamento === "dinheiro").reduce((s, p) => s + num(p.total), 0),
     cartao: ps.filter((p) => cobrar(p) && p.pagamento === "cartao_entrega").reduce((s, p) => s + num(p.total), 0) });
@@ -1322,7 +1667,7 @@ async function telaEntregadores() {
       <div class="kpi"><span>Taxas de entrega</span><b>${brl(geral.taxas)}</b></div><div class="kpi"><span>Recebido na entrega</span><b>${brl(geral.dinheiro + geral.cartao)}</b><small>💵 ${brl(geral.dinheiro)} · 💳 ${brl(geral.cartao)}</small></div></div>
     ${grupos.map((g) => { const r = resumo(g.ps); return `<div class="caixa ent-card ${g.e.id ? "" : "sem-ent"}" data-ent="${g.e.id}">
       <div class="ent-topo"><div><h2 style="margin:0">${g.e.id ? "🛵 " : "⚠ "}${esc(g.e.nome)}</h2>
-        <span class="muted">${r.n} entrega${r.n === 1 ? "" : "s"} · pedidos ${brl(r.total)} · taxas <b>${brl(r.taxas)}</b>${r.dinheiro ? ` · 💵 dinheiro ${brl(r.dinheiro)}` : ""}${r.cartao ? ` · 💳 maquininha ${brl(r.cartao)}` : ""}</span></div>
+        <span class="muted">${r.n} entrega${r.n === 1 ? "" : "s"} · pedidos ${brl(r.total)} · taxas <b>${brl(r.taxas)}</b>${g.e.id && (num(g.e.valor_fixo) || num(g.e.valor_por_entrega)) ? ` · <b style="color:var(--ok)">a receber ${brl(ganho(g.e, g.ps).valor)}</b>` : ""}${r.dinheiro ? ` · 💵 dinheiro ${brl(r.dinheiro)}` : ""}${r.cartao ? ` · 💳 maquininha ${brl(r.cartao)}` : ""}</span></div>
         <div class="acs">${r.n ? `<button class="btn sec peq" data-ver>Ver pedidos</button>` : ""}${g.e.telefone && r.n ? `<button class="btn sec peq" data-zap>💬 Mandar resumo</button>` : ""}${r.n ? `<button class="btn sec peq" data-imp>🖨</button>` : ""}</div></div>
       <div class="ent-lista oculto">${varios ? porDia(g.ps) : ""}<table class="t"><tr><th>#</th><th>${varios ? "Data" : "Hora"}</th><th>Cliente</th><th>Bairro</th><th>Pagamento</th><th class="num">Taxa</th><th class="num">Total</th></tr>
         ${g.ps.map((p) => `<tr><td>#${p.numero}</td><td>${varios ? dataBR(p.criado_em).slice(0, 5) + " " : ""}${hora(p.criado_em)}</td><td>${esc(p.cliente_nome)}</td><td>${esc(p.bairro || "—")}</td>
@@ -1338,7 +1683,7 @@ async function telaEntregadores() {
   const textoResumo = (g) => {
     const r = resumo(g.ps);
     return [`🛵 *Resumo de entregas — ${g.e.nome}*`, rotulo, "", ...g.ps.map((p) => `#${p.numero} ${varios ? dataBR(p.criado_em).slice(0, 5) + " " : ""}${hora(p.criado_em)} · ${p.bairro || ""} · taxa ${brl(p.taxa_entrega)}${cobrar(p) ? ` · cobrar ${brl(p.total)} (${NOMES_PAGAMENTO[p.pagamento]})` : ""}`),
-      "", `*Entregas:* ${r.n}`, `*Total de taxas:* ${brl(r.taxas)}`, r.dinheiro ? `*Dinheiro recebido:* ${brl(r.dinheiro)}` : "", r.cartao ? `*Maquininha:* ${brl(r.cartao)}` : ""].filter((x, i, a) => x !== "" || a[i - 1] !== "").join("\n");
+      "", `*Entregas:* ${r.n}`, `*Total de taxas:* ${brl(r.taxas)}`, ...(num(g.e.valor_fixo) || num(g.e.valor_por_entrega) ? [`*A receber:* ${brl(ganho(g.e, g.ps).valor)} (${ganho(g.e, g.ps).dias} dia(s) × ${brl(g.e.valor_fixo)} + ${r.n} × ${brl(g.e.valor_por_entrega)})`] : []), r.dinheiro ? `*Dinheiro recebido:* ${brl(r.dinheiro)}` : "", r.cartao ? `*Maquininha:* ${brl(r.cartao)}` : ""].filter((x, i, a) => x !== "" || a[i - 1] !== "").join("\n");
   };
   C().querySelectorAll("[data-zap]").forEach((b) => b.onclick = () => { const g = grupoDe(b); window.open(`https://wa.me/${foneWhats(g.e.telefone)}?text=${encodeURIComponent(textoResumo(g))}`, "_blank"); });
   C().querySelectorAll("[data-imp]").forEach((b) => b.onclick = () => {
@@ -1350,6 +1695,9 @@ async function telaEntregadores() {
       <body><h1>ENTREGAS — ${esc(g.e.nome.toUpperCase())}</h1><div class="c">${esc(rotulo)}</div><br>
       ${g.ps.map((p) => `<div class="ln"><span>#${p.numero} ${varios ? dataBR(p.criado_em).slice(0, 5) : hora(p.criado_em)} ${esc(p.bairro || "")}</span><span>${brl(p.taxa_entrega)}</span></div>`).join("")}
       <div class="ln tot"><span>${r.n} entregas · TAXAS</span><span>${brl(r.taxas)}</span></div>
+      ${num(g.e.valor_fixo) || num(g.e.valor_por_entrega) ? `<div class="ln"><span>Fixo ${ganho(g.e, g.ps).dias} dia(s) × ${brl(g.e.valor_fixo)}</span><span>${brl(ganho(g.e, g.ps).dias * num(g.e.valor_fixo))}</span></div>
+        <div class="ln"><span>${r.n} × ${brl(g.e.valor_por_entrega)}</span><span>${brl(r.n * num(g.e.valor_por_entrega))}</span></div>
+        <div class="ln tot"><span>A RECEBER</span><span>${brl(ganho(g.e, g.ps).valor)}</span></div>` : ""}
       ${r.dinheiro ? `<div class="ln"><span>Dinheiro recebido</span><span>${brl(r.dinheiro)}</span></div>` : ""}${r.cartao ? `<div class="ln"><span>Maquininha</span><span>${brl(r.cartao)}</span></div>` : ""}
       <br><div class="c">Assinatura: ______________________</div></body></html>`);
     w.document.close(); mandarParaImpressora(w);
@@ -1367,7 +1715,10 @@ async function telaEntregadores() {
   };
   C().querySelectorAll("[data-salvar]").forEach((b) => b.onclick = async () => {
     const tr = b.closest("tr"), v = (c) => tr.querySelector(`[data-c=${c}]`);
-    const { error } = await sb.from("entregadores").update({ nome: v("nome").value, telefone: v("telefone").value.replace(/\D/g, ""), ativo: v("ativo").checked }).eq("id", tr.dataset.e);
+    const dec = (el) => { const x = Number(String(el.value).trim().replace(/\s|R\$/g, "").replace(",", ".") || 0); return Number.isFinite(x) && x >= 0 ? x : null; };
+    const fixo = dec(v("valor_fixo")), porEnt = dec(v("valor_por_entrega"));
+    if (fixo == null || porEnt == null) return aviso("Valor inválido", "erro");
+    const { error } = await sb.from("entregadores").update({ nome: v("nome").value, telefone: v("telefone").value.replace(/\D/g, ""), ativo: v("ativo").checked, valor_fixo: fixo, valor_por_entrega: porEnt }).eq("id", tr.dataset.e);
     if (error) return aviso(error.message, "erro");
     aviso("Entregador salvo", "ok"); await carregarEntregadores();
   });

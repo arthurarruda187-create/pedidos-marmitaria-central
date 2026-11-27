@@ -304,6 +304,12 @@ code{background:#f4f4f5;padding:0 .3rem;border-radius:4px;font-size:.85em}
 .ent-topo{display:flex;justify-content:space-between;gap:.8rem;align-items:center;flex-wrap:wrap}.ent-topo .acs{display:flex;gap:.4rem}
 .ent-card.sem-ent{border:1px dashed #f59e0b;background:#fffbeb}.ent-lista{margin-top:.7rem}
 .por-dia{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.6rem}.por-dia span{background:#f4f4f5;border-radius:8px;padding:.2rem .5rem;font-size:.82rem}
+  .especial-pdv { background: #fef9c3; border: 1px solid #fde047; border-radius: 8px; padding: .45rem .6rem; margin: .4rem 0; font-size: .88rem; }
+  .fiado-pdv { border: 1px dashed var(--linha); border-radius: 8px; padding: .5rem; margin-top: .4rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .fiado-pdv img { height: 54px; background: #fff; border: 1px solid var(--linha); border-radius: 6px; }
+  .tela-ass { width: 100%; height: 240px; background: #fff; border: 2px dashed #a1a1aa; border-radius: 10px; touch-action: none; cursor: crosshair; display: block; }
+  .devedor { border-bottom: 1px solid var(--linha); padding: .6rem 0; }
+  .devedor .ent-lista { margin-top: .5rem; }
 </style>
 </head>
 <body>
@@ -325,6 +331,8 @@ code{background:#f4f4f5;padding:0 .3rem;border-radius:4px;font-size:.85em}
       <button data-aba="pedidos" class="ativa">📋 Pedidos <span class="cont oculto" id="contNovos"></span></button>
       <button data-aba="pdv">🧾 Lançar pedido</button>
       <button data-aba="historico">🗂 Histórico</button>
+      <button data-aba="caixa">💰 Fechamento de caixa</button>
+      <button data-aba="fiado">📝 Fiado e especiais</button>
       <div class="grupo-t">Gestão</div>
       <button data-aba="financeiro">📊 Financeiro</button>
       <button data-aba="vendidos">📈 Mais vendidos</button>
