@@ -744,13 +744,15 @@ async function telaPdv() {
   const ehApp = () => APPS_DELIVERY.includes(pdv.origem);
   const subtotal = () => pdv.itens.reduce((s, i) => s + linha(i).total, 0);
   const especialPdv = () => especialDe(pdv.cliente.tel);
-  const taxa = () => {
+  const taxaManual = () => { const v = String(pdv.cliente.taxaManual ?? "").trim().replace(",", "."); return v !== "" && Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : null; };
+  const taxaAuto = () => {
     if (pdv.tipo !== "entrega") return 0;
     const ce = especialPdv();
     if (ce && ce.taxa_entrega != null) return num(ce.taxa_entrega);
     const bs = bairrosAtivos(), b = bs.find((x) => x.id === pdv.cliente.bairro_id);
     return bs.length ? (b ? taxaDoBairro(loja, b) ?? lojaUltimaFaixa() : 0) : num(loja.taxa_entrega);
   };
+  const taxa = () => pdv.tipo !== "entrega" ? 0 : taxaManual() ?? taxaAuto();
   const total = () => ehApp() && pdv.cliente.totalApp ? (Number(String(pdv.cliente.totalApp).replace(",", ".")) || 0) : subtotal() + taxa();
   const qtdNoPedido = (id) => pdv.itens.filter((i) => i.produto_id === id).reduce((s, i) => s + i.quantidade, 0);
   const impAoLancar = () => { try { return localStorage.getItem("pdvImprimir") === "1"; } catch { return false; } };
@@ -827,8 +829,9 @@ async function telaPdv() {
       <label class="rot">Observação</label><input class="campo" data-f="obs" value="${esc(pdv.cliente.obs || "")}">
       <div class="totais">
         <div><span>Subtotal</span><span>${brl(sub)}</span></div>
-        ${pdv.tipo === "entrega" ? `<div><span>Entrega</span><span>${brl(tx)}</span></div>` : ""}
-        <div class="total"><span>Total</span><span>${brl(tot)}${app && pdv.cliente.totalApp ? " <small class='muted'>(app)</small>" : ""}</span></div>
+        ${pdv.tipo === "entrega" ? `<div class="linha-taxa"><span>Entrega ${taxaManual() != null ? `<button class="link" id="pTaxaAuto" title="Voltar para a taxa do bairro">↺ automática (${brl(taxaAuto())})</button>` : `<small class="muted">✏️ dá para mudar</small>`}</span>
+          <span class="taxa-edit">R$ <input class="campo" id="pTaxa" data-f="taxaManual" data-redesenha inputmode="decimal" value="${esc(pdv.cliente.taxaManual ?? "")}" placeholder="${tx.toFixed(2).replace(".", ",")}"></span></div>` : ""}
+        <div class="total"><span>Total</span><span id="pTotalV">${brl(tot)}${app && pdv.cliente.totalApp ? " <small class='muted'>(app)</small>" : ""}</span></div>
       </div>
       <div class="erro" id="pErro"></div>
       <button class="btn bloco ok grande" id="pFinalizar" ${pdv.itens.length ? "" : "disabled"}>Lançar pedido · ${brl(tot)}</button>
@@ -899,7 +902,7 @@ async function telaPdv() {
     if (!pdv.itens.length) return;
     const btn = $("#pFinalizar"); if (btn.disabled) return;
     const app = ehApp();
-    if (pdv.tipo === "entrega" && bairrosAtivos().length && !pdv.cliente.bairro_id) return $("#pErro").textContent = "Escolha o bairro da entrega.";
+    if (pdv.tipo === "entrega" && bairrosAtivos().length && !pdv.cliente.bairro_id && taxaManual() == null) return $("#pErro").textContent = "Escolha o bairro da entrega.";
     if (pdv.tipo === "mesa" && !String(pdv.cliente.mesa || "").trim()) return $("#pErro").textContent = "Informe o número da mesa.";
     if (pdv.pag === "fiado") {
       const tel = String(pdv.cliente.tel || "").replace(/\D/g, "");
@@ -915,6 +918,7 @@ async function telaPdv() {
     const corpo = { canal: "balcao", cliente_nome: pdv.cliente.nome || "Balcão", cliente_telefone: pdv.cliente.tel || "", tipo: pdv.tipo, mesa: pdv.cliente.mesa || "",
       endereco: pdv.cliente.end || "", bairro_id: pdv.cliente.bairro_id || null, pagamento: pdv.pag, troco_para: pdv.cliente.troco ? String(pdv.cliente.troco).replace(",", ".") : null,
       observacao: pdv.cliente.obs || "", itens: pdv.itens, origem: pdv.origem, id_externo: pdv.cliente.ext || "", total_app: app ? (pdv.cliente.totalApp || null) : null,
+      taxa_manual: pdv.tipo === "entrega" && taxaManual() != null ? taxaManual() : null,
       ...(pdv.pag === "fiado" ? { assinatura: pdv.assinatura } : {}) };
     try {
       const { data: { session } } = await sb.auth.getSession();
@@ -955,6 +959,7 @@ async function telaPdv() {
       desenharCarrinho(); const i = $("#pEnd"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); return;
     }
     if (t.id === "pFinalizar") return lancar();
+    if (t.id === "pTaxaAuto") { pdv.cliente.taxaManual = ""; return desenharCarrinho(); }
     if (t.id === "pAssinar") { pedirAssinatura(pdv.cliente.nome, total()).then((a) => { if (a) pdv.assinatura = a; desenharCarrinho(); }); return; }
     if (t.id === "pLimpar") { pdv.itens = []; pdv.cliente = {}; pdv.assinatura = null; desenharCarrinho(); return desenharProdutos(); }
     if (t.id === "pBuscaLimpa") { pdv.busca = ""; $("#pBusca").value = ""; $("#pBusca").focus(); return desenharProdutos(); }
@@ -972,6 +977,10 @@ async function telaPdv() {
       pdv.cliente[t.dataset.f] = t.value;
       if (t.dataset.f === "tel") { pdv.assinatura = null; sugerirCliente(); }
       if (t.dataset.f === "end") sugerirRua(t.value);
+      if (t.dataset.f === "taxaManual") { // atualiza o total enquanto digita, sem redesenhar
+        $("#pTotalV").textContent = brl(total()); const b = $("#pFinalizar"); if (b && !b.disabled) b.textContent = "Lançar pedido · " + brl(total());
+        $("#pBarra").innerHTML = `<span>🧾 Ver pedido</span><span>${brl(total())}</span>`;
+      }
       if (antes != null && antes !== (especialDe(pdv.cliente.tel)?.telefone || "") + "|" + fiadoDe(pdv.cliente.tel)) {
         const pos = t.selectionStart; desenharCarrinho(); const n = $("#pTel"); if (n) { n.focus(); n.setSelectionRange(pos, pos); }
       }
@@ -985,6 +994,7 @@ async function telaPdv() {
   raiz.addEventListener("keydown", (e) => {
     if (e.target.id === "pBusca" && e.key === "Enter") { const p = raiz.querySelector("#pProds [data-p]:not([disabled])"); if (p) { adicionar(p.dataset.p); pdv.busca = ""; e.target.value = ""; desenharProdutos(); } }
     if (e.target.id === "pBairroBusca" && e.key === "Enter") { e.preventDefault(); raiz.querySelector("[data-bairro]")?.click(); }
+    if (e.target.id === "pTaxa" && e.key === "Enter") { e.preventDefault(); e.target.blur(); }
     if (e.target.id === "pEnd" && e.key === "Enter") { const b = raiz.querySelector("[data-rua]"); if (b) { e.preventDefault(); b.click(); } }
   });
   atalhosPdv = (e) => {
@@ -1481,7 +1491,8 @@ async function dadosFechamento(diaStr) {
     fiadoDado: soma(validos.filter((p) => p.pagamento === "fiado")) };
 }
 // trabalhou = recebe o fixo do dia (padrão: quem fez entrega)
-const pagoEntregador = (x, trabalhou) => (trabalhou ? x.fixo : 0) + x.n * x.porEnt;
+// o entregador fica com as taxas de entrega dos pedidos dele + fixo do dia (+ extra por entrega, se houver)
+const pagoEntregador = (x, trabalhou) => (trabalhou ? x.fixo : 0) + x.taxas + x.n * x.porEnt;
 
 function imprimirFechamento(D, { trabalharam, contado = null } = {}) {
   const { papel } = confImp(), larg = papel === "58" ? 48 : 72;
@@ -1519,7 +1530,8 @@ function imprimirFechamento(D, { trabalharam, contado = null } = {}) {
     ${Object.keys(D.fiadoRec).length ? Object.entries(D.fiadoRec).map(([k, x]) => ln(`Recebido · ${esc(NOMES_PAGAMENTO[k] || k)} (${x.n})`, brl(x.v))).join("") : ln("Recebido hoje", brl(0))}
     <div class="t">ENTREGADORES</div>
     ${ents.map((x) => `<div class="ent"><b>${esc(x.e.nome)}</b>
-      ${ln(`${x.n} entrega${x.n === 1 ? "" : "s"} × ${brl(x.porEnt)}`, brl(x.n * x.porEnt), "sub")}
+      ${ln(`Taxas de ${x.n} entrega${x.n === 1 ? "" : "s"}`, brl(x.taxas), "sub")}
+      ${x.porEnt ? ln(`Extra ${x.n} × ${brl(x.porEnt)}`, brl(x.n * x.porEnt), "sub") : ""}
       ${ln("Fixo do dia", trab(x) ? brl(x.fixo) : "—", "sub")}
       ${ln("A RECEBER", brl(pagoEntregador(x, trab(x))), "tot")}
       ${x.dinheiro || x.cartao ? `<div class="sub">Trouxe: ${x.dinheiro ? "💵 " + brl(x.dinheiro) : ""}${x.dinheiro && x.cartao ? " · " : ""}${x.cartao ? "💳 maquininha " + brl(x.cartao) : ""}</div>` : ""}
@@ -1557,13 +1569,13 @@ async function telaFechamento() {
         <div class="caixa"><h2>Formas de pagamento</h2>${barrasH(Object.entries(D.porPag).map(([k, x]) => ({ k: NOMES_PAGAMENTO[k] || k, v: x.v, extra: `${x.n} pedidos` })).sort((a, b) => b.v - a.v))}</div>
         <div class="caixa"><h2>Canais</h2>${barrasH(Object.entries(D.porCanal).map(([k, x]) => ({ k, v: x.v, extra: `${x.n} pedidos` })).sort((a, b) => b.v - a.v))}</div></div>
       <div class="caixa"><h2>🛵 Entregadores</h2>
-        <table class="t"><tr><th>Trabalhou</th><th>Entregador</th><th class="num">Entregas</th><th class="num">Por entrega</th><th class="num">Fixo</th><th class="num">A receber</th><th class="num">Trouxe</th></tr>
+        <table class="t"><tr><th>Trabalhou</th><th>Entregador</th><th class="num">Entregas</th><th class="num">Taxas</th><th class="num">Fixo</th><th class="num">A receber</th><th class="num">Trouxe</th></tr>
         ${ativos.map((x) => `<tr><td><input type="checkbox" data-trab="${x.e.id}" ${trabalharam.has(x.e.id) ? "checked" : ""}></td><td><b>${esc(x.e.nome)}</b></td><td class="num">${x.n}</td>
-          <td class="num">${brl(x.n * x.porEnt)} <small class="muted">(${brl(x.porEnt)})</small></td><td class="num">${trabalharam.has(x.e.id) ? brl(x.fixo) : "—"}</td>
+          <td class="num">${brl(x.taxas)}${x.porEnt ? ` <small class="muted">+ ${brl(x.n * x.porEnt)} extra</small>` : ""}</td><td class="num">${trabalharam.has(x.e.id) ? brl(x.fixo) : "—"}</td>
           <td class="num"><b>${brl(pagoEntregador(x, trabalharam.has(x.e.id)))}</b></td><td class="num">${x.dinheiro ? "💵 " + brl(x.dinheiro) : ""}${x.cartao ? " 💳 " + brl(x.cartao) : ""}</td></tr>`).join("")
           || `<tr><td colspan="7" class="vazio">Nenhum entregador</td></tr>`}</table>
         ${D.semEnt ? `<p class="erro" style="margin:.5rem 0 0">⚠ ${D.semEnt} entrega(s) sem entregador escolhido — não entram na conta de ninguém.</p>` : ""}
-        <p class="muted" style="margin-bottom:0">Valores de cada entregador (fixo por dia e valor por entrega) ficam na aba <b>Entregadores</b>. Marque quem trabalhou para somar o fixo.</p></div>
+        <p class="muted" style="margin-bottom:0">O entregador fica com as <b>taxas de entrega</b> dos pedidos dele + o <b>fixo do dia</b> (cadastrado na aba <b>Entregadores</b>). Marque quem trabalhou para somar o fixo.</p></div>
       <div class="caixa"><h2>🖨 Imprimir</h2>
         <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:end">
           <div><label class="rot">Dinheiro contado na gaveta <span class="muted">(opcional)</span></label><input class="campo curto" id="fcContado" inputmode="decimal" placeholder="0,00"></div>
@@ -1623,14 +1635,14 @@ async function telaEntregadores() {
         <label class="chip-data ${perEnt.tipo === "escolhermes" ? "ativo" : ""}">🗓 Mês <input type="month" id="peMes" value="${perEnt.mes}"></label></div>
       <h2 style="margin:.8rem 0 0">${esc(rotulo)}</h2></div>
     <div id="entRel"><p class="muted">Carregando…</p></div>
-    <div class="caixa"><h2>Cadastro</h2><table class="t"><tr><th>Nome</th><th>WhatsApp</th><th>Fixo por dia</th><th>Por entrega</th><th>Ativo</th><th></th></tr>
+    <div class="caixa"><h2>Cadastro</h2><table class="t"><tr><th>Nome</th><th>WhatsApp</th><th>Fixo por dia</th><th>Extra por entrega</th><th>Ativo</th><th></th></tr>
     ${entregadores.map((e) => `<tr data-e="${e.id}">
       <td><input class="campo" data-c="nome" value="${esc(e.nome)}"></td><td><input class="campo" data-c="telefone" value="${esc(e.telefone)}" placeholder="43999999999"></td>
       <td><input class="campo curto" data-c="valor_fixo" inputmode="decimal" value="${num(e.valor_fixo) ? String(num(e.valor_fixo).toFixed(2)).replace(".", ",") : ""}" placeholder="0,00"></td>
       <td><input class="campo curto" data-c="valor_por_entrega" inputmode="decimal" value="${num(e.valor_por_entrega) ? String(num(e.valor_por_entrega).toFixed(2)).replace(".", ",") : ""}" placeholder="0,00"></td>
       <td><input type="checkbox" data-c="ativo" ${e.ativo ? "checked" : ""}></td>
       <td style="white-space:nowrap"><button class="btn sec peq" data-salvar>Salvar</button> ${e.token ? `<button class="btn sec peq" data-link title="Copiar o link do entregador">🔗 Link</button> ${e.telefone ? `<button class="btn peq" data-link-zap>📲 Enviar link</button>` : ""}` : ""} <button class="btn perigo peq" data-apagar>×</button></td></tr>`).join("") || `<tr><td colspan="6" class="vazio">Cadastre seus entregadores para escolher quem leva cada pedido.</td></tr>`}
-    </table><p class="muted" style="margin-bottom:0">💰 <b>Fixo por dia</b> + <b>por entrega</b>: é o que ele ganha. Entra no <b>Fechamento de caixa</b> e no resumo abaixo (o fixo conta nos dias em que ele fez entrega).
+    </table><p class="muted" style="margin-bottom:0">💰 O entregador ganha as <b>taxas de entrega</b> dos pedidos dele + o <b>fixo por dia</b> (conta nos dias em que ele fez entrega). <b>Extra por entrega</b> é opcional — deixe vazio se não tiver. Entra no <b>Fechamento de caixa</b> e no resumo abaixo.
       <br>Só entram na conta do entregador os pedidos em que ele foi escolhido no card do pedido.
       <br>🔗 <b>Link do entregador:</b> ele abre no celular, vê as entregas dele, avisa que saiu e <b>finaliza com o código</b> que o cliente recebe. Não precisa de senha — não compartilhe o link com outras pessoas.</p></div>`;
 
@@ -1657,7 +1669,7 @@ async function telaEntregadores() {
   const grupos = [...entregadores.map((e) => ({ e, ps: peds.filter((p) => p.entregador_id === e.id) })),
     { e: { id: "", nome: "Sem entregador escolhido", telefone: "" }, ps: peds.filter((p) => !p.entregador_id || !entregadores.some((x) => x.id === p.entregador_id)) }]
     .filter((g) => g.e.id || g.ps.length);
-  const ganho = (e, ps) => { const dias = new Set(ps.map((p) => dataBR(p.criado_em))).size; return { dias, valor: dias * num(e.valor_fixo) + ps.length * num(e.valor_por_entrega) }; };
+  const ganho = (e, ps) => { const dias = new Set(ps.map((p) => dataBR(p.criado_em))).size; return { dias, valor: dias * num(e.valor_fixo) + ps.reduce((s, p) => s + num(p.taxa_entrega), 0) + ps.length * num(e.valor_por_entrega) }; };
   const resumo = (ps) => ({ n: ps.length, total: ps.reduce((s, p) => s + num(p.total), 0), taxas: ps.reduce((s, p) => s + num(p.taxa_entrega), 0),
     dinheiro: ps.filter((p) => cobrar(p) && p.pagamento === "dinheiro").reduce((s, p) => s + num(p.total), 0),
     cartao: ps.filter((p) => cobrar(p) && p.pagamento === "cartao_entrega").reduce((s, p) => s + num(p.total), 0) });
@@ -1667,7 +1679,7 @@ async function telaEntregadores() {
       <div class="kpi"><span>Taxas de entrega</span><b>${brl(geral.taxas)}</b></div><div class="kpi"><span>Recebido na entrega</span><b>${brl(geral.dinheiro + geral.cartao)}</b><small>💵 ${brl(geral.dinheiro)} · 💳 ${brl(geral.cartao)}</small></div></div>
     ${grupos.map((g) => { const r = resumo(g.ps); return `<div class="caixa ent-card ${g.e.id ? "" : "sem-ent"}" data-ent="${g.e.id}">
       <div class="ent-topo"><div><h2 style="margin:0">${g.e.id ? "🛵 " : "⚠ "}${esc(g.e.nome)}</h2>
-        <span class="muted">${r.n} entrega${r.n === 1 ? "" : "s"} · pedidos ${brl(r.total)} · taxas <b>${brl(r.taxas)}</b>${g.e.id && (num(g.e.valor_fixo) || num(g.e.valor_por_entrega)) ? ` · <b style="color:var(--ok)">a receber ${brl(ganho(g.e, g.ps).valor)}</b>` : ""}${r.dinheiro ? ` · 💵 dinheiro ${brl(r.dinheiro)}` : ""}${r.cartao ? ` · 💳 maquininha ${brl(r.cartao)}` : ""}</span></div>
+        <span class="muted">${r.n} entrega${r.n === 1 ? "" : "s"} · pedidos ${brl(r.total)} · taxas <b>${brl(r.taxas)}</b>${g.e.id ? ` · <b style="color:var(--ok)">a receber ${brl(ganho(g.e, g.ps).valor)}</b>` : ""}${r.dinheiro ? ` · 💵 dinheiro ${brl(r.dinheiro)}` : ""}${r.cartao ? ` · 💳 maquininha ${brl(r.cartao)}` : ""}</span></div>
         <div class="acs">${r.n ? `<button class="btn sec peq" data-ver>Ver pedidos</button>` : ""}${g.e.telefone && r.n ? `<button class="btn sec peq" data-zap>💬 Mandar resumo</button>` : ""}${r.n ? `<button class="btn sec peq" data-imp>🖨</button>` : ""}</div></div>
       <div class="ent-lista oculto">${varios ? porDia(g.ps) : ""}<table class="t"><tr><th>#</th><th>${varios ? "Data" : "Hora"}</th><th>Cliente</th><th>Bairro</th><th>Pagamento</th><th class="num">Taxa</th><th class="num">Total</th></tr>
         ${g.ps.map((p) => `<tr><td>#${p.numero}</td><td>${varios ? dataBR(p.criado_em).slice(0, 5) + " " : ""}${hora(p.criado_em)}</td><td>${esc(p.cliente_nome)}</td><td>${esc(p.bairro || "—")}</td>
@@ -1683,7 +1695,7 @@ async function telaEntregadores() {
   const textoResumo = (g) => {
     const r = resumo(g.ps);
     return [`🛵 *Resumo de entregas — ${g.e.nome}*`, rotulo, "", ...g.ps.map((p) => `#${p.numero} ${varios ? dataBR(p.criado_em).slice(0, 5) + " " : ""}${hora(p.criado_em)} · ${p.bairro || ""} · taxa ${brl(p.taxa_entrega)}${cobrar(p) ? ` · cobrar ${brl(p.total)} (${NOMES_PAGAMENTO[p.pagamento]})` : ""}`),
-      "", `*Entregas:* ${r.n}`, `*Total de taxas:* ${brl(r.taxas)}`, ...(num(g.e.valor_fixo) || num(g.e.valor_por_entrega) ? [`*A receber:* ${brl(ganho(g.e, g.ps).valor)} (${ganho(g.e, g.ps).dias} dia(s) × ${brl(g.e.valor_fixo)} + ${r.n} × ${brl(g.e.valor_por_entrega)})`] : []), r.dinheiro ? `*Dinheiro recebido:* ${brl(r.dinheiro)}` : "", r.cartao ? `*Maquininha:* ${brl(r.cartao)}` : ""].filter((x, i, a) => x !== "" || a[i - 1] !== "").join("\n");
+      "", `*Entregas:* ${r.n}`, `*Total de taxas:* ${brl(r.taxas)}`, `*A receber:* ${brl(ganho(g.e, g.ps).valor)} (taxas ${brl(r.taxas)}${num(g.e.valor_fixo) ? ` + fixo ${ganho(g.e, g.ps).dias} dia(s) × ${brl(g.e.valor_fixo)}` : ""}${num(g.e.valor_por_entrega) ? ` + extra ${r.n} × ${brl(g.e.valor_por_entrega)}` : ""})`, r.dinheiro ? `*Dinheiro recebido:* ${brl(r.dinheiro)}` : "", r.cartao ? `*Maquininha:* ${brl(r.cartao)}` : ""].filter((x, i, a) => x !== "" || a[i - 1] !== "").join("\n");
   };
   C().querySelectorAll("[data-zap]").forEach((b) => b.onclick = () => { const g = grupoDe(b); window.open(`https://wa.me/${foneWhats(g.e.telefone)}?text=${encodeURIComponent(textoResumo(g))}`, "_blank"); });
   C().querySelectorAll("[data-imp]").forEach((b) => b.onclick = () => {
@@ -1695,9 +1707,9 @@ async function telaEntregadores() {
       <body><h1>ENTREGAS — ${esc(g.e.nome.toUpperCase())}</h1><div class="c">${esc(rotulo)}</div><br>
       ${g.ps.map((p) => `<div class="ln"><span>#${p.numero} ${varios ? dataBR(p.criado_em).slice(0, 5) : hora(p.criado_em)} ${esc(p.bairro || "")}</span><span>${brl(p.taxa_entrega)}</span></div>`).join("")}
       <div class="ln tot"><span>${r.n} entregas · TAXAS</span><span>${brl(r.taxas)}</span></div>
-      ${num(g.e.valor_fixo) || num(g.e.valor_por_entrega) ? `<div class="ln"><span>Fixo ${ganho(g.e, g.ps).dias} dia(s) × ${brl(g.e.valor_fixo)}</span><span>${brl(ganho(g.e, g.ps).dias * num(g.e.valor_fixo))}</span></div>
-        <div class="ln"><span>${r.n} × ${brl(g.e.valor_por_entrega)}</span><span>${brl(r.n * num(g.e.valor_por_entrega))}</span></div>
-        <div class="ln tot"><span>A RECEBER</span><span>${brl(ganho(g.e, g.ps).valor)}</span></div>` : ""}
+      ${num(g.e.valor_fixo) ? `<div class="ln"><span>Fixo ${ganho(g.e, g.ps).dias} dia(s) × ${brl(g.e.valor_fixo)}</span><span>${brl(ganho(g.e, g.ps).dias * num(g.e.valor_fixo))}</span></div>` : ""}
+      ${num(g.e.valor_por_entrega) ? `<div class="ln"><span>Extra ${r.n} × ${brl(g.e.valor_por_entrega)}</span><span>${brl(r.n * num(g.e.valor_por_entrega))}</span></div>` : ""}
+      ${g.e.id ? `<div class="ln tot"><span>A RECEBER</span><span>${brl(ganho(g.e, g.ps).valor)}</span></div>` : ""}
       ${r.dinheiro ? `<div class="ln"><span>Dinheiro recebido</span><span>${brl(r.dinheiro)}</span></div>` : ""}${r.cartao ? `<div class="ln"><span>Maquininha</span><span>${brl(r.cartao)}</span></div>` : ""}
       <br><div class="c">Assinatura: ______________________</div></body></html>`);
     w.document.close(); mandarParaImpressora(w);
