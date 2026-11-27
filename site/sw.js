@@ -1,7 +1,7 @@
 // Service worker: faz o cardápio e o painel funcionarem como app no celular.
 // Páginas e código: sempre tenta a versão nova da internet; sem internet, usa a última salva.
 // Dados (pedidos, cardápio) nunca ficam guardados aqui: vêm sempre do Supabase.
-const VERSAO = "app-v30";
+const VERSAO = "app-v31";
 const BASE = [
   "./", "./index.html", "./painel.html", "./painel.js", "./comum.js", "./config.js", "./app.js",
   "./cliente.webmanifest", "./painel.webmanifest",

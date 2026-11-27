@@ -371,6 +371,7 @@ function telaPedidos() {
         <span class="badge">Hoje: <b>&nbsp;${validos.length}</b>&nbsp;pedidos</span>
         <span class="badge ok">${brl(validos.reduce((s, p) => s + num(p.total), 0))}</span>
         ${conexao === "SUBSCRIBED" ? `<span class="badge ok">● ao vivo</span>` : `<span class="badge alerta">● atualizando a cada 20 s</span>`}
+        <button class="badge chip-acao ${loja.aceitar_auto ? "ok" : ""}" id="btnAceiteAuto" title="Aceitar os pedidos sozinho (vão direto para Em preparo)">${loja.aceitar_auto ? "✓ aceite automático" : "aceite manual"}</button>
         <button class="badge chip-acao" id="editTempo" title="Mudar o tempo mostrado no cardápio">⏱ ${esc(loja.tempo_entrega)} ✎</button>
         <button class="badge chip-acao ${impAuto() ? "ok" : ""}" id="btnImpAuto" title="Impressão automática neste aparelho">🖨 ${impAuto() === "chegar" ? "auto: ao chegar" : impAuto() === "aceitar" ? "auto: ao aceitar" : "impressão"}</button>
         <button class="btn peq" onclick="location.hash='pdv'" id="novoBalcao">+ Lançar pedido</button>
@@ -390,6 +391,15 @@ function telaPedidos() {
   atualizarTempos();
   $("#ligaSom")?.addEventListener("click", () => ligarSom(true));
   $("#editTempo").onclick = editarTempo;
+  $("#btnAceiteAuto").onclick = async () => {
+    const novo = !loja.aceitar_auto;
+    if (!(await confirmar(novo ? "Ligar o aceite automático?" : "Desligar o aceite automático?",
+      novo ? "Todo pedido que chegar vai direto para <b>Em preparo</b> (o cliente já recebe a mensagem de que está sendo preparado)." : "Os pedidos vão chegar em <b>Novos</b> e alguém precisa clicar em Aceitar.", { botao: novo ? "Ligar" : "Desligar" }))) return;
+    const { error } = await sb.from("loja").update({ aceitar_auto: novo }).eq("id", 1);
+    if (error) return aviso(error.message, "erro");
+    if (novo) { const { data } = await sb.from("pedidos").update({ status: "preparo" }).eq("status", "novo").is("api_pedido_id", null).select("id"); if (data?.length) aviso(`${data.length} pedido(s) que estavam em Novos foram aceitos`, "ok"); }
+    await carregarLoja(); await carregarPedidos(); telaPedidos();
+  };
   $("#btnImpAuto").onclick = configurarImpAuto;
   C().querySelectorAll("[data-col]").forEach((b) => b.onclick = () => { colMovel = Number(b.dataset.col); telaPedidos(); });
   C().querySelectorAll(".card [data-acao]").forEach((b) => b.onclick = () => acao(b.dataset.acao, b.closest(".card").dataset.id, b.dataset.para));
@@ -671,11 +681,26 @@ function marcarImpresso(id) {
   try { localStorage.setItem("impressos", JSON.stringify([...s].slice(-400))); } catch {}
 }
 let filaImp = [], imprimindo = false;
+// pedido que chegou agora (cardápio, mesa, app) — com o aceite automático ele já entra "Em preparo"
+const chegouAgora = (p) => p.canal !== "balcao" && (p.status === "novo" || (loja?.aceitar_auto && p.status === "preparo"));
+let avisados = null;
+function avisarChegadas() {
+  const recentes = [...pedidos.values()].filter((p) => chegouAgora(p) && Date.now() - new Date(p.criado_em) < 15 * 60000);
+  if (!avisados) { avisados = new Set(recentes.map((p) => p.id)); return; } // primeira carga: não toca pelos antigos
+  const novos = recentes.filter((p) => !avisados.has(p.id));
+  if (!novos.length) return;
+  novos.forEach((p) => avisados.add(p.id));
+  if (!loja?.aceitar_auto) return; // sem aceite automático, a campainha dos "Novos" já toca
+  bip(); setTimeout(bip, 1200);
+  for (const p of novos) aviso(`🔔 Pedido #${p.numero} chegou${p.mesa ? " · Mesa " + p.mesa : ""} — já foi para o preparo`, "ok");
+}
 function autoImprimir() {
-  if (impAuto() !== "chegar") return;
+  avisarChegadas();
+  const modo = impAuto();
+  if (modo !== "chegar" && !(modo === "aceitar" && loja?.aceitar_auto)) return;
   const ja = impressos(), limite = Date.now() - 30 * 60000;
   for (const p of pedidos.values())
-    if (p.status === "novo" && !ja.has(p.id) && new Date(p.criado_em) > limite && !filaImp.includes(p.id)) filaImp.push(p.id);
+    if (chegouAgora(p) && !ja.has(p.id) && new Date(p.criado_em) > limite && !filaImp.includes(p.id)) filaImp.push(p.id);
   proximaImpressao();
 }
 function proximaImpressao() {
@@ -693,7 +718,7 @@ async function configurarImpAuto() {
     botao: "Salvar", extra: "teste" });
   if (!r) return;
   try { localStorage.setItem("impAuto", r.modo); localStorage.setItem("impPapel", r.papel); localStorage.setItem("impVias", r.vias); } catch {}
-  if (r.modo === "chegar") [...pedidos.values()].forEach((p) => marcarImpresso(p.id)); // não reimprime os que já estão na tela
+  if (r.modo) [...pedidos.values()].forEach((p) => marcarImpresso(p.id)); // não reimprime os que já estão na tela
   aviso("Impressão configurada", "ok");
   const ex = [...pedidos.values()].sort((a, b) => b.criado_em.localeCompare(a.criado_em))[0];
   if (ex && await confirmar("Imprimir um teste?", `Vou imprimir o pedido #${ex.numero} para você ver como fica.`, { botao: "🖨 Imprimir teste", cancelar: "Agora não" })) imprimir(ex);
