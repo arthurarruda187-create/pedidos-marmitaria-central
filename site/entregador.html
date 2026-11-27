@@ -42,6 +42,7 @@
   .feito { text-align: center; padding: .6rem; color: var(--ok); font-weight: 700; }
   .toast { position: fixed; left: 50%; bottom: 1.2rem; transform: translateX(-50%); background: #111827; color: #fff; padding: .7rem 1rem; border-radius: 12px; font-weight: 600; z-index: 9; }
   .oculto { display: none !important; }
+  .rota { margin-bottom: .8rem; } .rota .btn { width: 100%; font-size: 1.05rem; padding: .9rem; }
 </style>
 </head>
 <body>
@@ -86,7 +87,9 @@ function desenhar() {
   const ps = dados.pedidos;
   const el = document.getElementById("lista");
   if (!ps.length) { el.innerHTML = `<div class="vazio">Nenhuma entrega com você agora. 🙌<br><small>A tela atualiza sozinha.</small></div>`; return; }
-  el.innerHTML = ps.map((p) => {
+  const aSair = ps.filter((p) => p.status !== "saiu");
+  el.innerHTML = (aSair.length > 1 || (aSair.length === 1 && ps.length > 1) ? `<div class="rota"><button class="btn pri full" id="sairRota">🛵 Saí para rota — ${aSair.length} pedido${aSair.length === 1 ? "" : "s"}</button>
+      <div class="muted" style="margin-top:.3rem;text-align:center">Marca a saída de todas as entregas que estão com você agora</div></div>` : "") + ps.map((p) => {
     const mapa = p.lat != null ? `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent((p.endereco || "") + " " + (p.bairro || ""))}`;
     const bloq = p.bloqueado_ate && new Date(p.bloqueado_ate) > new Date();
     return `<div class="card" data-id="${p.id}">
@@ -108,6 +111,8 @@ function desenhar() {
     </div>`;
   }).join("");
   el.querySelectorAll("[data-saiu]").forEach((b) => b.onclick = () => saiu(b.closest(".card").dataset.id, b));
+  const rota = document.getElementById("sairRota");
+  if (rota) rota.onclick = () => sairRota(aSair, rota);
   el.querySelectorAll("[data-fim]").forEach((b) => b.onclick = () => finalizar(b.closest(".card"), b));
   el.querySelectorAll(".codigo input").forEach((i) => i.onkeydown = (e) => { if (e.key === "Enter") i.parentElement.querySelector("[data-fim]").click(); });
 }
@@ -118,6 +123,20 @@ async function saiu(id, b) {
   ocupado = false;
   if (error || data !== "ok") { b.disabled = false; return toast(error ? "Sem internet. Tente de novo." : data); }
   toast("Boa entrega! 🛵"); carregar();
+}
+
+// sai com todos os pedidos de uma vez (o cliente de cada um é avisado que saiu)
+async function sairRota(lista, b) {
+  if (b.dataset.conf !== "1") { b.dataset.conf = "1"; b.textContent = `Confirmar: sair com ${lista.length} pedido(s)?`; b.classList.add("ok"); setTimeout(() => { if (b.isConnected) desenhar(); }, 5000); return; }
+  b.disabled = true; ocupado = true; b.textContent = "Saindo…";
+  let ok = 0, erros = [];
+  for (const p of lista) {
+    const { data, error } = await sb.rpc("entregador_saiu", { p_token: token, p_pedido: p.id });
+    if (!error && data === "ok") ok++; else erros.push(`#${p.numero}: ${error ? "sem internet" : data}`);
+  }
+  ocupado = false;
+  toast(erros.length ? `Saíram ${ok}. Não deu: ${erros.join(", ")}` : `Boa rota! 🛵 ${ok} pedido${ok === 1 ? "" : "s"} saíram`);
+  carregar();
 }
 
 async function finalizar(card, b) {
