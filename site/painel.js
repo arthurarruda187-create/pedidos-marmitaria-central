@@ -290,6 +290,7 @@ function seloCanal(p) {
 function badgePagamento(p) {
   if (p.pagamento === "fiado") return p.fiado_pago_em ? `<span class="badge ok">✓ Fiado recebido</span>` : `<span class="badge alerta">📝 FIADO</span>`;
   if (p.pagamento === "pago_app") return `<span class="badge ok">✓ PAGO NO APP</span>`;
+  if (p.pagamento === "caixa" && p.pagamento_status !== "pago") return `<span class="badge alerta">💰 paga no caixa</span>`;
   if (p.pagamento_status === "pago") return `<span class="badge ok">✓ PAGO · ${esc(NOMES_PAGAMENTO[p.pagamento])}</span>`;
   if (p.pagamento === "pix_entrega") return `<span class="badge roxo">💠 Pix a confirmar</span>`;
   if (p.pagamento_status === "na_entrega") return `<span class="badge">${esc(NOMES_PAGAMENTO[p.pagamento])}</span>`;
@@ -339,6 +340,7 @@ function cardPedido(p) {
       <option value="">— escolher entregador —</option>${entregadores.filter((e) => e.ativo || e.id === p.entregador_id).map((e) => `<option value="${e.id}" ${e.id === p.entregador_id ? "selected" : ""}>${esc(e.nome)}</option>`).join("")}</select></div>` : ""}
     <div class="acoes">
       ${proximo ? `<button class="btn ${p.status === "novo" ? "ok" : "escuro"} principal" data-acao="status" data-para="${proximo[0]}">${proximo[1]}</button>` : ""}
+      ${p.pagamento === "caixa" && p.pagamento_status !== "pago" ? `<button class="btn sec peq" data-acao="receber">💰 Receber</button>` : ""}
       ${p.pagamento === "pix_entrega" && p.pagamento_status !== "pago" ? `<button class="btn sec peq" data-acao="enviarpix">💠 Enviar Pix</button><button class="btn sec peq" data-acao="pago">✓ Marcar pago</button>` : ""}
       <button class="btn sec peq" data-acao="imprimir">🖨 Imprimir</button>
       ${(p.itens || []).some((it) => it.para) ? `<button class="btn sec peq" data-acao="etiquetas">🏷 Etiquetas</button>` : ""}
@@ -382,7 +384,7 @@ function telaPedidos() {
       ${fim.length ? `<table class="t"><tr><th>#</th><th>Hora</th><th>Cliente</th><th>Tipo</th><th>Situação</th><th class="num">Total</th><th></th></tr>${fim.map((p) =>
         `<tr><td>#${p.numero}</td><td>${hora(p.criado_em)}</td><td>${esc(p.cliente_nome)}</td><td>${p.tipo === "entrega" ? "Entrega" : p.tipo === "mesa" ? "Mesa " + esc(p.mesa) : "Retirada"} ${seloCanal(p)}</td>
         <td>${p.status === "cancelado" ? `<span class="badge perigo">Cancelado</span>` : `<span class="badge ok">Entregue</span>`} ${p.status !== "cancelado" ? badgePagamento(p) : ""}</td>
-        <td class="num">${brl(p.total)}</td><td class="num"><button class="btn sec peq" data-reimprimir="${p.id}">🖨</button>${p.pagamento === "pix_entrega" && p.pagamento_status !== "pago" && p.status !== "cancelado" ? ` <button class="btn sec peq" data-pagofim="${p.id}">✓ pago</button>` : ""}</td></tr>`).join("")}</table>` : `<p class="vazio">Nenhum ainda</p>`}
+        <td class="num">${brl(p.total)}</td><td class="num"><button class="btn sec peq" data-reimprimir="${p.id}">🖨</button>${p.pagamento === "pix_entrega" && p.pagamento_status !== "pago" && p.status !== "cancelado" ? ` <button class="btn sec peq" data-pagofim="${p.id}">✓ pago</button>` : ""}${p.pagamento === "caixa" && p.pagamento_status !== "pago" && p.status !== "cancelado" ? ` <button class="btn ok peq" data-receberfim="${p.id}">💰 Receber</button>` : ""}</td></tr>`).join("")}</table>` : `<p class="vazio">Nenhum ainda</p>`}
     </div>`;
   atualizarTempos();
   $("#ligaSom")?.addEventListener("click", () => ligarSom(true));
@@ -398,6 +400,7 @@ function telaPedidos() {
   });
   C().querySelectorAll("[data-reimprimir]").forEach((b) => b.onclick = () => imprimir(pedidos.get(b.dataset.reimprimir)));
   C().querySelectorAll("[data-pagofim]").forEach((b) => b.onclick = () => acao("pago", b.dataset.pagofim));
+  C().querySelectorAll("[data-receberfim]").forEach((b) => b.onclick = () => acao("receber", b.dataset.receberfim));
 }
 
 async function atualizarPedido(id, campos) {
@@ -452,6 +455,17 @@ async function acao(tipo, id, para) {
     return window.open(`https://wa.me/${foneWhats(p.cliente_telefone)}?text=${encodeURIComponent(msg)}`, "_blank");
   }
   if (tipo === "pago") return atualizarPedido(id, { pagamento_status: "pago" });
+  if (tipo === "receber") { // mesa: cliente pagou no caixa → grava a forma real
+    const p = pedidos.get(id); if (!p) return;
+    const forma = await new Promise((ok) => {
+      const f = abrirModal(`<h2 style="margin:0 0 .3rem">💰 Receber — #${p.numero}</h2><p class="muted" style="margin:0 0 .8rem">${p.mesa ? "Mesa " + esc(p.mesa) + " · " : ""}<b>${brl(p.total)}</b><br>Como o cliente pagou?</p>
+        <div class="seg">${[["dinheiro", "💵 Dinheiro"], ["cartao_entrega", "💳 Cartão"], ["pix_entrega", "💠 Pix"]].map(([v, t]) => `<button data-f="${v}">${t}</button>`).join("")}</div>`, 420);
+      f.querySelectorAll("[data-f]").forEach((b) => b.onclick = () => { f.remove(); ok(b.dataset.f); });
+      f.querySelector(".fechar").addEventListener("click", () => ok(null));
+    });
+    if (forma) { await atualizarPedido(id, { pagamento: forma, pagamento_status: "pago" }); aviso(`#${p.numero} recebido`, "ok"); }
+    return;
+  }
   if (tipo === "cancelar") {
     const r = await formulario({ titulo: `Cancelar o pedido #${p.numero}?`, texto: `${esc(p.cliente_nome)} · ${brl(p.total)}`,
       campos: [{ nome: "motivo", rotulo: "Motivo do cancelamento", tipo: "textarea", opcional: true, placeholder: "Escreva ou toque numa sugestão" }],

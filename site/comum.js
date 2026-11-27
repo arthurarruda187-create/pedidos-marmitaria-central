@@ -19,6 +19,7 @@ export const NOMES_PAGAMENTO = {
   pix_entrega: "Pix (loja envia o código)",
   pago_app: "Pago no app",
   fiado: "Fiado",
+  caixa: "Paga no caixa",
 };
 
 export const CANAIS = {

@@ -506,7 +506,7 @@ function abrirSacola() {
     loja.aceita_dinheiro && ["dinheiro", "💵 Dinheiro"],
   ].filter(Boolean);
   const naMesa = !!(MESA && loja.aceita_mesa);
-  const formasMesa = [["cartao_entrega", "💳 Cartão (maquininha)"], ["pix_entrega", "💠 Pix"], ["dinheiro", "💵 Dinheiro"]];
+  const formasMesa = [["caixa", "Paga no caixa"]]; // na mesa o cliente paga no caixa: não escolhe nada
   if (naMesa) formas.splice(0, formas.length, ...formasMesa);
   const tipos = naMesa ? ["mesa"] : [loja.aceita_entrega && "entrega", loja.aceita_retirada && "retirada"].filter(Boolean);
   const salvo = ler("cliente", {});
@@ -564,11 +564,11 @@ function abrirSacola() {
         <p class="muted" style="font-size:.82rem;margin:.3rem 0 0">Dica: no produto, preencha "Para quem é?" que cada marmita sai com o nome na etiqueta.</p></details>
     </div>`}
 
-    <div class="bloco"><h3>Pagamento</h3>
+    ${naMesa ? `<div class="bloco"><h3>Pagamento</h3><div>💰 Você paga no <b>caixa</b> quando terminar 😊</div><input type="radio" name="pag" value="caixa" checked hidden></div>` : `<div class="bloco"><h3>Pagamento</h3>
       <div class="pagamentos">${formas.map(([v, t], i) => `<label><input type="radio" name="pag" value="${v}" ${(salvo.pag ? salvo.pag === v : i === 0) ? "checked" : ""}>${t}</label>`).join("")}</div>
       <div id="blocoTroco" class="oculto"><label class="rotulo">Troco para quanto? <span class="muted">(vazio = não precisa)</span></label><input class="campo" id="cTroco" type="number" min="0" step="0.01" inputmode="decimal"></div>
       <div id="blocoEmail" class="oculto"><label class="rotulo">E-mail para o comprovante (opcional)</label><input class="campo" id="cEmail" type="email" maxlength="120" value="${esc(salvo.email || "")}"></div>
-    </div>
+    </div>`}
 
     <div class="bloco"><h3>Cupom de desconto</h3>
       <div class="cupom"><input class="campo" id="cCupom" maxlength="30" placeholder="Digite o cupom"><button id="aplicarCupom">Aplicar</button></div>
@@ -636,8 +636,8 @@ function abrirSacola() {
     $("#sugestoes", m).innerHTML = sug.length ? `<div class="bloco"><h3>Peça também</h3><div class="carrossel sug">${sug.map((p) => `
       <button class="card-dest" data-sug="${p.id}"><div class="img" style="${imgCss(p.foto_url)}">${p.foto_url ? "" : "🍽️"}</div><b>${esc(p.nome)}</b>${precoHtml(p)}<span class="mais">+ Adicionar</span></button>`).join("")}</div></div>` : "";
     m.querySelectorAll("[data-sug]").forEach((b) => b.onclick = () => { m.remove(); abrirProduto(b.dataset.sug, () => abrirSacola()); });
-    $("#blocoTroco", m).classList.toggle("oculto", pag() !== "dinheiro");
-    $("#blocoEmail", m).classList.toggle("oculto", pag() !== "pix_online");
+    $("#blocoTroco", m)?.classList.toggle("oculto", pag() !== "dinheiro");
+    $("#blocoEmail", m)?.classList.toggle("oculto", pag() !== "pix_online");
     const sub = subtotal(), tx = taxa(), ds = desconto(), tot = sub + tx - ds;
     const faltaBairro = tipo === "entrega" && bairros.length && !bairroSel() && !modoMapa;
     const minimo = tipo === "entrega" && sub < Number(loja.pedido_minimo);
@@ -768,9 +768,9 @@ function abrirSacola() {
     const btn = $("#enviarPedido", m), erro = $("#erroPedido", m);
     erro.textContent = "";
     const dados = {
-      cliente_nome: naMesa ? `Mesa ${MESA}` : $("#cNome", m).value, cliente_telefone: naMesa ? "" : $("#cTel", m).value, cliente_email: $("#cEmail", m).value,
+      cliente_nome: naMesa ? `Mesa ${MESA}` : $("#cNome", m).value, cliente_telefone: naMesa ? "" : $("#cTel", m).value, cliente_email: ($("#cEmail", m)?.value || ""),
       tipo, mesa: naMesa ? MESA : undefined, endereco: [$("#cRua", m).value.trim(), $("#cNum", m).value.trim()].filter(Boolean).join(", ") + ($("#cCompl", m).value.trim() ? " - " + $("#cCompl", m).value.trim() : ""), bairro_id: $("#cBairro", m)?.value || null, observacao: $("#cObs", m).value,
-      pagamento: pag(), troco_para: $("#cTroco", m).value || null, cupom: cupom?.codigo || null,
+      pagamento: pag(), troco_para: $("#cTroco", m)?.value || null, cupom: cupom?.codigo || null,
       itens: carrinho.map(({ produto_id, quantidade, observacao, adicionais, para }) => ({ produto_id, quantidade, observacao, adicionais, para })),
       empresa: $("#cEmpresa", m)?.value.trim() || undefined,
     };
