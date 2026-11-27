@@ -44,7 +44,7 @@ export type EntradaItem = {
   adicionais?: { opcao_id: string; quantidade: number }[];
 };
 
-export type Pagamento = "pix_online" | "cartao_online" | "dinheiro" | "cartao_entrega" | "pix_entrega" | "pago_app";
+export type Pagamento = "pix_online" | "cartao_online" | "dinheiro" | "cartao_entrega" | "pix_entrega" | "pago_app" | "fiado";
 export const APPS = ["ifood", "aiqfome", "keeta", "99food"] as const;
 export type App = typeof APPS[number];
 
@@ -68,6 +68,7 @@ export type EntradaPedido = {
   total_app?: number | string | null; // valor que o app cobrou do cliente
   agendado_para?: string | null;      // pedido agendado (data e hora)
   empresa?: string;                   // pedido para empresa
+  assinatura?: string;                // fiado: assinatura do cliente (imagem PNG em data URL)
   itens: EntradaItem[];
 };
 
@@ -78,6 +79,7 @@ export type Extras = {
   balcao?: boolean;         // pedido lançado pela loja (PDV)
   agora?: Date;             // relógio (para testes)
   agendaNoHorario?: boolean; // loja_funciona_em(agendado_para)
+  taxaEspecial?: number | null; // cliente especial: taxa de entrega própria (só a loja vê/configura)
 };
 
 export type ItemCalculado = {
@@ -186,7 +188,9 @@ export function calcularPedido(
   const origem = balcao && entrada.origem && (APPS as readonly string[]).includes(entrada.origem) ? entrada.origem as App : null;
   const pagamentosPermitidos: Record<string, boolean> = origem
     ? { pago_app: true, dinheiro: true, cartao_entrega: true }
-    : balcao || mesaPedido
+    : balcao
+    ? { dinheiro: true, cartao_entrega: true, pix_entrega: true, fiado: true }
+    : mesaPedido
     ? { dinheiro: true, cartao_entrega: true, pix_entrega: true }
     : {
       pix_online: loja.aceita_pix_online,
@@ -196,6 +200,15 @@ export function calcularPedido(
       pix_entrega: !!loja.aceita_pix_entrega,
     };
   if (!pagamentosPermitidos[entrada.pagamento]) throw new ErroPedido("Forma de pagamento indisponível.");
+  let assinatura: string | null = null;
+  if (entrada.pagamento === "fiado") {
+    if (telefone.length < 10) throw new ErroPedido("Para fiado, informe o telefone do cliente (é por ele que a conta é controlada).");
+    if (nome === "Balcão") throw new ErroPedido("Para fiado, informe o nome do cliente.");
+    const a = typeof entrada.assinatura === "string" ? entrada.assinatura : "";
+    if (!/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(a) || a.length < 200) throw new ErroPedido("Falta a assinatura do cliente para o fiado.");
+    if (a.length > 300000) throw new ErroPedido("Assinatura muito grande. Limpe e assine de novo.");
+    assinatura = a;
+  }
 
   if (!Array.isArray(entrada.itens) || entrada.itens.length === 0) throw new ErroPedido("O carrinho está vazio.");
   if (entrada.itens.length > 50) throw new ErroPedido("Pedido com itens demais.");
@@ -266,7 +279,8 @@ export function calcularPedido(
       && Math.abs(la) <= 90 && Math.abs(ln) <= 180 && !(la === 0 && ln === 0);
     if (temPonto && loja.lat != null && loja.lng != null) ponto = { lat: la, lng: ln, km: Math.round(kmLinhaReta(Number(loja.lat), Number(loja.lng), la, ln) * 100) / 100 };
   }
-  if (entrada.tipo === "entrega" && loja.modo_taxa === "mapa" && !balcao) {
+  const especial = entrada.tipo === "entrega" && extras.taxaEspecial != null && Number.isFinite(Number(extras.taxaEspecial)) && Number(extras.taxaEspecial) >= 0;
+  if (entrada.tipo === "entrega" && loja.modo_taxa === "mapa" && !balcao && !especial) {
     // igual ao aiqfome: a taxa sai da distância em linha reta até o ponto que o cliente marcou no mapa
     if (!ponto) throw new ErroPedido("Marque no mapa o local da entrega.");
     const t = taxaPorFaixa(ponto.km, loja.faixas_km ?? []);
@@ -275,6 +289,8 @@ export function calcularPedido(
       throw new ErroPedido(`Esse local fica a ${ponto.km.toFixed(1).replace(".", ",")} km da loja — entregamos até ${String(max).replace(".", ",")} km.`);
     }
     taxaC = centavos(t);
+  } else if (especial) {
+    taxaC = centavos(Number(extras.taxaEspecial));
   } else if (entrada.tipo === "entrega") {
     let t = bairro ? taxaDoBairro(loja, bairro) : Number(loja.taxa_entrega);
     if (t == null) {
@@ -340,7 +356,8 @@ export function calcularPedido(
       troco_para: troco,
       canal: origem ?? (balcao ? "balcao" : mesaPedido ? "mesa" : "cardapio"),
       status: online ? "aguardando_pagamento" : balcao ? "preparo" : "novo",
-      pagamento_status: online ? "pendente" : entrada.pagamento === "pago_app" ? "pago" : "na_entrega",
+      pagamento_status: online || entrada.pagamento === "fiado" ? "pendente" : entrada.pagamento === "pago_app" ? "pago" : "na_entrega",
+      assinatura,
     },
     email: texto(entrada.cliente_email, 120),
   };
@@ -449,7 +466,14 @@ Deno.serve(async (req) => {
     const { data: ok } = await db.rpc("loja_funciona_em", { p_quando: new Date(String(entrada.agendado_para)).toISOString() });
     agendaNoHorario = !!ok;
   }
-  const extras = { aberta: !!abertaR.data, bairros: bairrosR.data ?? [], balcao, cupom: null as Cupom | null, agendaNoHorario };
+  // cliente especial: taxa de entrega própria (cadastrada só no painel)
+  let taxaEspecial: number | null = null;
+  const telEsp = String(entrada.cliente_telefone ?? "").replace(/\D/g, "").slice(0, 20);
+  if (entrada.tipo === "entrega" && telEsp.length >= 10) {
+    const { data: esp } = await db.from("clientes_especiais").select("taxa_entrega").eq("telefone", telEsp).maybeSingle();
+    if (esp && esp.taxa_entrega != null) taxaEspecial = Number(esp.taxa_entrega);
+  }
+  const extras = { aberta: !!abertaR.data, bairros: bairrosR.data ?? [], balcao, cupom: null as Cupom | null, agendaNoHorario, taxaEspecial };
   let calc;
   try {
     calc = calcularPedido(entrada, lojaR.data, prodR.data ?? [], grupR.data ?? [], opcR.data ?? [], extras);
