@@ -1901,20 +1901,29 @@ async function telaAvaliacoes() {
     <div class="caixa">${av.length ? `<table class="t"><tr><th>Data</th><th>Pedido</th><th>Cliente</th><th>Nota</th><th>Comentário</th><th></th></tr>${av.map((a) => `<tr>
       <td>${dataBR(a.criado_em)}</td><td>#${a.pedidos?.numero ?? "—"}</td><td>${esc(a.pedidos?.cliente_nome || "")}</td><td style="white-space:nowrap">${est(a.nota)}</td>
       <td>${a.comentario ? esc(a.comentario) : `<span class="muted">—</span>`}</td>
-      <td style="white-space:nowrap">${foneAv(a) ? `<a class="btn sec peq" target="_blank" title="WhatsApp ${esc(foneBonito(foneAv(a)))}" href="https://wa.me/${foneWhats(foneAv(a))}?text=${encodeURIComponent(`Olá, ${(a.pedidos?.cliente_nome || "").split(" ")[0]}! Obrigado pela avaliação do pedido #${a.pedidos?.numero ?? ""} 😊`)}">💬</a>` : ""}
-        <button class="btn sec peq" data-fone-av="${a.id}" title="Arrumar o número do WhatsApp">✏️ ${foneAv(a) ? esc(foneBonito(foneAv(a))) : "número"}</button></td></tr>`).join("")}</table>`
+      <td style="white-space:nowrap">${foneAv(a) ? `<a class="btn sec peq" target="_blank" title="WhatsApp ${esc(foneBonito(foneAv(a)))}" href="https://wa.me/${foneWhats(foneAv(a))}?text=${encodeURIComponent(`Olá, ${(a.pedidos?.cliente_nome || "").split(" ")[0]}! Obrigado pela avaliação do pedido #${a.pedidos?.numero ?? ""} 😊`)}">💬</a>` : ""}</td></tr>`).join("")}</table>`
       : `<p class="vazio">Nenhuma avaliação ainda. Depois que o pedido é marcado como entregue, o cliente vê as estrelinhas na página do pedido.</p>`}</div>`;
-  C().querySelectorAll("[data-fone-av]").forEach((b) => b.onclick = async () => {
-    const a = av.find((x) => x.id === b.dataset.foneAv);
-    const r = await formulario({ titulo: "Número do WhatsApp", texto: `Avaliação do pedido #${a.pedidos?.numero ?? "—"}${a.pedidos?.cliente_nome ? " · " + esc(a.pedidos.cliente_nome) : ""}. Deixe vazio para voltar ao número do pedido.`,
-      campos: [{ nome: "tel", rotulo: "WhatsApp (com DDD)", tipo: "tel", valor: foneAv(a) ? foneBonito(foneAv(a)) : "", placeholder: "(43) 99999-9999", opcional: true }], botao: "Salvar número" });
-    if (!r) return;
-    const dig = String(r.tel || "").replace(/\D/g, "");
-    if (dig && (dig.length < 10 || dig.length > 13)) return aviso("Número incompleto: use DDD + número.", "erro");
-    const { error } = await sb.from("avaliacoes").update({ telefone: dig || null }).eq("id", a.id);
+  // número que recebe as avaliações no WhatsApp
+  const { data: cfgAv } = await sb.from("config_privada").select("whatsapp_avaliacoes").eq("id", 1).maybeSingle();
+  $("#avCorpo").insertAdjacentHTML("afterbegin", `<div class="caixa"><h2>📲 Receber as avaliações no WhatsApp</h2>
+    <p class="muted" style="margin-top:0">Toda avaliação nova chega neste número, com as estrelas, o comentário e o número do pedido. Notas de 1 a 3 chegam com um alerta para você chamar o cliente.</p>
+    <div style="display:flex;gap:.5rem;align-items:end;flex-wrap:wrap">
+      <div><label class="rot">WhatsApp que recebe (com DDD)</label><input class="campo" id="avNum" type="tel" inputmode="tel" placeholder="(43) 99999-9999" value="${esc(cfgAv?.whatsapp_avaliacoes ? foneBonito(cfgAv.whatsapp_avaliacoes) : "")}"></div>
+      <button class="btn" id="avSalvarNum">Salvar</button><button class="btn sec" id="avTesteNum" ${cfgAv?.whatsapp_avaliacoes ? "" : "disabled"}>📲 Enviar teste</button></div>
+    <p class="muted" style="margin-bottom:0;font-size:.85rem">Usa o mesmo WhatsApp conectado em <b>WhatsApp automático</b>. Deixe vazio para não receber.</p></div>`);
+  $("#avSalvarNum").onclick = async () => {
+    const dig = $("#avNum").value.replace(/\D/g, "").replace(/^55(?=\d{10,11}$)/, "");
+    if (dig && (dig.length < 10 || dig.length > 11)) return aviso("Número incompleto: use DDD + número.", "erro");
+    const { error } = await sb.from("config_privada").update({ whatsapp_avaliacoes: dig || null }).eq("id", 1);
     if (error) return aviso("Não salvou: " + error.message, "erro");
-    aviso("Número salvo", "ok"); telaAvaliacoes();
-  });
+    aviso(dig ? "Pronto! As avaliações vão chegar nesse número." : "Não vai mais receber avaliações no WhatsApp.", "ok"); telaAvaliacoes();
+  };
+  $("#avTesteNum").onclick = async () => {
+    const b = $("#avTesteNum"); b.disabled = true; b.textContent = "Enviando…";
+    try { await chamarWhats({ teste_avaliacao: true }); aviso("Teste enviado! Confira o WhatsApp.", "ok"); }
+    catch (e) { aviso("Não enviou: " + e.message, "erro"); }
+    b.disabled = false; b.textContent = "📲 Enviar teste";
+  };
 }
 const foneAv = (a) => a.telefone || a.pedidos?.cliente_telefone || "";
 
