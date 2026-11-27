@@ -68,6 +68,7 @@ export type EntradaPedido = {
   total_app?: number | string | null; // valor que o app cobrou do cliente
   agendado_para?: string | null;      // pedido agendado (data e hora)
   empresa?: string;                   // pedido para empresa
+  taxa_manual?: number | string | null; // PDV: taxa de entrega digitada pela loja (vazio = automática)
   assinatura?: string;                // fiado: assinatura do cliente (imagem PNG em data URL)
   itens: EntradaItem[];
 };
@@ -182,7 +183,8 @@ export function calcularPedido(
   let bairro: Bairro | null = null;
   if (entrada.tipo === "entrega" && extras.bairros.length) {
     bairro = extras.bairros.find((b) => b.id === entrada.bairro_id) ?? null;
-    if (!bairro && !(loja.modo_taxa === "mapa" && !balcao)) throw new ErroPedido("Escolha o seu bairro."); // no modo mapa vale o ponto
+    const temTaxaManual = balcao && entrada.taxa_manual != null && String(entrada.taxa_manual).trim() !== "";
+    if (!bairro && !temTaxaManual && !(loja.modo_taxa === "mapa" && !balcao)) throw new ErroPedido("Escolha o seu bairro."); // no modo mapa vale o ponto
   }
 
   const origem = balcao && entrada.origem && (APPS as readonly string[]).includes(entrada.origem) ? entrada.origem as App : null;
@@ -279,8 +281,14 @@ export function calcularPedido(
       && Math.abs(la) <= 90 && Math.abs(ln) <= 180 && !(la === 0 && ln === 0);
     if (temPonto && loja.lat != null && loja.lng != null) ponto = { lat: la, lng: ln, km: Math.round(kmLinhaReta(Number(loja.lat), Number(loja.lng), la, ln) * 100) / 100 };
   }
-  const especial = entrada.tipo === "entrega" && extras.taxaEspecial != null && Number.isFinite(Number(extras.taxaEspecial)) && Number(extras.taxaEspecial) >= 0;
-  if (entrada.tipo === "entrega" && loja.modo_taxa === "mapa" && !balcao && !especial) {
+  const tm = entrada.taxa_manual;
+  const manual = balcao && entrada.tipo === "entrega" && tm != null && String(tm).trim() !== "" && Number.isFinite(Number(String(tm).replace(",", "."))) && Number(String(tm).replace(",", ".")) >= 0
+    ? Number(String(tm).replace(",", ".")) : null;
+  if (manual != null && manual > 1000) throw new ErroPedido("Taxa de entrega muito alta.");
+  const especial = manual == null && entrada.tipo === "entrega" && extras.taxaEspecial != null && Number.isFinite(Number(extras.taxaEspecial)) && Number(extras.taxaEspecial) >= 0;
+  if (manual != null) {
+    taxaC = centavos(manual);
+  } else if (entrada.tipo === "entrega" && loja.modo_taxa === "mapa" && !balcao && !especial) {
     // igual ao aiqfome: a taxa sai da distância em linha reta até o ponto que o cliente marcou no mapa
     if (!ponto) throw new ErroPedido("Marque no mapa o local da entrega.");
     const t = taxaPorFaixa(ponto.km, loja.faixas_km ?? []);
