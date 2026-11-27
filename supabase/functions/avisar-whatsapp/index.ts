@@ -183,6 +183,27 @@ Deno.serve(async (req) => {
     catch (err) { return json({ erro: (err as Error).message }, 502); }
   }
 
+  // Avaliação nova → WhatsApp do dono (gatilho do banco) ou teste pelo painel
+  if (e.avaliacao_id || e.teste_avaliacao) {
+    if (e.teste_avaliacao) { if (!(await ehAdmin(req))) return json({ erro: "Somente o dono da loja." }, 403); }
+    else if (!cfg || e.segredo !== cfg.segredo) return json({ erro: "não autorizado" }, 401);
+    const destino = String(cfg?.whatsapp_avaliacoes || "").replace(/\D/g, "");
+    if (destino.length < 10) return json({ erro: "Cadastre o número que recebe as avaliações." }, 400);
+    let a: any = { nota: 5, comentario: "Teste: é assim que as avaliações vão chegar 😊" }, p: any = { numero: "—", cliente_nome: "Cliente de teste" };
+    if (e.avaliacao_id) {
+      const r = await db.from("avaliacoes").select("nota,comentario,pedido_id").eq("id", e.avaliacao_id).single();
+      if (r.error || !r.data) return json({ ignorado: "avaliação não encontrada" });
+      a = r.data;
+      p = (await db.from("pedidos").select("numero,cliente_nome,cliente_telefone,tipo,mesa").eq("id", a.pedido_id).single()).data ?? p;
+    }
+    const estrelas = "⭐".repeat(Math.max(1, Math.min(5, Number(a.nota) || 0)));
+    const texto = [`${estrelas} *Nova avaliação — ${a.nota}/5*`, `Pedido *#${p.numero}* · ${p.cliente_nome || ""}${p.cliente_telefone ? " · " + p.cliente_telefone : ""}`,
+      a.comentario ? `💬 "${String(a.comentario).slice(0, 500)}"` : "(sem comentário)", Number(a.nota) <= 3 ? "\n⚠️ Vale chamar o cliente para entender o que houve." : ""]
+      .filter(Boolean).join("\n");
+    try { await enviar(cfg, destino, texto); return json({ ok: true }); }
+    catch (err) { return json({ erro: (err as Error).message }, 502); }
+  }
+
   // Chamada do gatilho do banco
   if (!cfg || e.segredo !== cfg.segredo) return json({ erro: "não autorizado" }, 401);
   if (!loja?.whatsapp_auto) return json({ ignorado: "desligado" });
