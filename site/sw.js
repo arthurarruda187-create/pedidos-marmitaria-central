@@ -1,7 +1,7 @@
 // Service worker: faz o cardápio e o painel funcionarem como app no celular.
 // Páginas e código: sempre tenta a versão nova da internet; sem internet, usa a última salva.
 // Dados (pedidos, cardápio) nunca ficam guardados aqui: vêm sempre do Supabase.
-const VERSAO = "app-v22";
+const VERSAO = "app-v23";
 const BASE = [
   "./", "./index.html", "./painel.html", "./painel.js", "./comum.js", "./config.js", "./app.js",
   "./cliente.webmanifest", "./painel.webmanifest",
@@ -9,7 +9,8 @@ const BASE = [
 ];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(VERSAO).then((c) => c.addAll(BASE)).then(() => self.skipWaiting()));
+  // cache: "reload" = baixa do servidor de verdade (não do cache do navegador, que pode estar com a versão velha)
+  e.waitUntil(caches.open(VERSAO).then((c) => c.addAll(BASE.map((u) => new Request(u, { cache: "reload" })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (e) => {
@@ -41,7 +42,8 @@ self.addEventListener("fetch", (e) => {
 
   // arquivos do próprio site: internet primeiro; se a internet demorar mais de 2,5 s
   // (ou cair), usa a cópia salva — a versão nova fica guardada para a próxima abertura
-  const daRede = fetch(req).then((r) => {
+  // "no-cache": sempre confere com o servidor se tem versão nova (resposta rápida quando não mudou)
+  const daRede = fetch(req.url, { cache: "no-cache" }).then((r) => {
     if (r.ok) { const copia = r.clone(); caches.open(VERSAO).then((c) => c.put(req, copia)); }
     return r;
   });
