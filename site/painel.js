@@ -826,8 +826,8 @@ async function telaPdv() {
         ${l.ads.map((a) => `<small>+ ${a.quantidade > 1 ? a.quantidade + "x " : ""}${esc(a.o.nome)}</small>`).join("")}${i.observacao ? `<small>📝 ${esc(i.observacao)}</small>` : ""}</div>
         <div class="dir">${brl(l.total)}<span class="qtd"><button data-menos="${k}" aria-label="Menos">${i.quantidade === 1 ? "🗑" : "−"}</button><button data-mais="${k}" aria-label="Mais">+</button></span></div></div>`; }).join("")
         : `<p class="vazio">Toque nos produtos para adicionar</p>`}</div>
-      <div class="grade2"><div><label class="rot">WhatsApp</label><input class="campo" data-f="tel" id="pTel" inputmode="tel" autocomplete="off" value="${esc(pdv.cliente.tel || "")}" placeholder="busca cliente"></div>
-        <div><label class="rot">Nome</label><input class="campo" data-f="nome" id="pNome" value="${esc(pdv.cliente.nome || "")}" placeholder="digite o nome: busca o cliente" autocomplete="off"></div></div>
+      <div class="grade2"><div><label class="rot">Nome</label><input class="campo" data-f="nome" id="pNome" value="${esc(pdv.cliente.nome || "")}" placeholder="digite o nome: busca o cliente" autocomplete="off"></div>
+        <div><label class="rot">WhatsApp</label><input class="campo" data-f="tel" id="pTel" inputmode="tel" autocomplete="off" value="${esc(pdv.cliente.tel || "")}" placeholder="busca cliente"></div></div>
       <div id="pSugCli"></div>
       ${ce ? `<div class="especial-pdv">⭐ <b>Cliente especial</b>${ce.taxa_entrega != null ? ` · entrega <b>${brl(ce.taxa_entrega)}</b>` : ""}${devendo ? ` · deve <b>${brl(devendo)}</b> no fiado` : ""}${ce.obs ? `<br><small>${esc(ce.obs)}</small>` : ""}</div>`
         : devendo ? `<div class="especial-pdv">📝 Deve <b>${brl(devendo)}</b> no fiado</div>` : ""}
