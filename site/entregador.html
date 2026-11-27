@@ -92,7 +92,8 @@ function desenhar() {
       <div class="muted" style="margin-top:.3rem;text-align:center">Marca a saída de todas as entregas que estão com você agora</div></div>` : "") + ps.map((p) => {
     const mapa = p.lat != null ? `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent((p.endereco || "") + " " + (p.bairro || ""))}`;
     const bloq = p.bloqueado_ate && new Date(p.bloqueado_ate) > new Date();
-    return `<div class="card" data-id="${p.id}">
+    const app = NOMES_CANAL[p.canal] || p.canal;
+    return `<div class="card" data-id="${p.id}" ${p.codigo_do_app ? "data-app" : ""}>
       <div class="topo"><span class="num">#${p.numero}</span><span style="display:flex;gap:.3rem">${p.canal !== "cardapio" ? `<span class="selo">${esc(NOMES_CANAL[p.canal] || p.canal)}${p.id_externo ? " " + esc(p.id_externo) : ""}</span>` : ""}<span class="st ${p.status}">${NOMES_ST[p.status] || p.status}</span></span></div>
       <div class="linha"><b>${esc(p.cliente_nome)}</b> <span class="muted">· ${p.qtd_itens} item(ns)</span></div>
       <div class="linha end">📍 ${esc(p.endereco || "")}${p.bairro ? ` — ${esc(p.bairro)}` : ""}</div>
@@ -103,7 +104,10 @@ function desenhar() {
         ${p.cliente_telefone ? `<a class="btn sec" href="https://wa.me/${foneWhats(p.cliente_telefone)}" target="_blank" rel="noopener">💬 ${esc(foneBonito(p.cliente_telefone))}</a>` : `<span></span>`}
         ${p.status !== "saiu" ? `<button class="btn pri full" data-saiu>🛵 Saí para entrega</button>` : ""}
       </div>
-      ${p.status === "saiu" || p.status === "pronto" ? (p.tem_codigo ? `
+      ${p.status === "saiu" || p.status === "pronto" ? (p.codigo_do_app ? `
+        <div class="codigo"><input inputmode="numeric" maxlength="12" placeholder="código" autocomplete="off"><button class="btn ok" data-fim>✅ Finalizar</button></div>
+        <div class="muted" style="margin-top:.3rem">Peça ao cliente o <b>código do ${esc(app)}</b> e digite aqui — a loja usa para dar baixa no app.</div>`
+        : p.tem_codigo ? `
         <div class="codigo"><input inputmode="numeric" maxlength="6" placeholder="código" autocomplete="off" ${bloq ? "disabled" : ""}><button class="btn ok" data-fim ${bloq ? "disabled" : ""}>✅ Finalizar</button></div>
         <div class="muted" style="margin-top:.3rem">Peça ao cliente o código de entrega (aparece no celular dele).</div>`
         : `<div class="botoes"><button class="btn ok full" data-fim>✅ Entreguei</button></div>`) : ""}
@@ -142,7 +146,11 @@ async function sairRota(lista, b) {
 async function finalizar(card, b) {
   const id = card.dataset.id, inp = card.querySelector(".codigo input"), erro = card.querySelector(".erro");
   const codigo = inp ? inp.value.replace(/\D/g, "") : "";
-  if (inp && codigo.length < 4) { erro.textContent = "Digite o código que o cliente passou."; inp.focus(); return; }
+  const doApp = card.hasAttribute("data-app");
+  if (inp && codigo.length < 4) {
+    if (!doApp) { erro.textContent = "Digite o código que o cliente passou."; inp.focus(); return; }
+    if (b.dataset.semCodigo !== "1") { b.dataset.semCodigo = "1"; b.textContent = "Finalizar sem código?"; erro.textContent = "Sem o código a loja não consegue dar baixa no app. Se tiver, digite."; inp.focus(); return; }
+  }
   b.disabled = true; ocupado = true; erro.textContent = "";
   try {
     let { data, error } = await sb.rpc("entregador_finalizar", { p_token: token, p_pedido: id, p_codigo: codigo });

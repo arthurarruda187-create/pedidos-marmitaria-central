@@ -359,6 +359,9 @@ function telaPedidos() {
   const aguard = de("aguardando_pagamento");
   const fim = lista.filter((p) => ["entregue", "cancelado"].includes(p.status) && p.criado_em >= ini).reverse();
   const novos = de("novo"), preparo = de("preparo"), prontos = de("pronto", "saiu");
+  // pedidos de app entregues pelo nosso entregador: a loja precisa dar baixa no app deles
+  const baixas = lista.filter((p) => p.status === "entregue" && APPS_DELIVERY.includes(p.canal) && p.tipo === "entrega" && !p.entrega_pelo_app
+    && !p.baixa_app_em && !p.codigo_entrega && !(p.canal === "ifood" && p.api_pedido_id && p.precisa_codigo_app));
   if (colMovel == null) colMovel = novos.length ? 0 : preparo.length ? 1 : 0;
   if (novos.length && colMovelVisto < novos.length) { colMovel = 0; colMovelVisto = novos.length; } // pedido novo chegou: mostra a aba Novos
   if (!novos.length) colMovelVisto = 0;
@@ -382,6 +385,12 @@ function telaPedidos() {
     <div class="quadro">${col("Novos", "#dc2626", novos)}${col("Em preparo", "#d97706", preparo)}${col("Prontos / em entrega", "#16a34a", prontos)}</div>
     ${aguard.length ? `<div class="caixa" style="margin-top:1rem"><h2>Aguardando pagamento online (${aguard.length})</h2><table class="t">${aguard.map((p) =>
       `<tr><td>#${p.numero}</td><td>${hora(p.criado_em)}</td><td>${esc(p.cliente_nome)}</td><td>${esc(NOMES_PAGAMENTO[p.pagamento])}</td><td class="num">${brl(p.total)}</td></tr>`).join("")}</table></div>` : ""}
+    ${baixas.length ? `<div class="caixa baixa-app" style="margin-top:1rem"><h2>📲 Dar baixa nos apps (${baixas.length})</h2>
+      <p class="muted" style="margin-top:0">Entregues pelos seus entregadores. Abra o app (iFood, aiqfome…), confirme a entrega com o código e clique em <b>✓ Baixa feita</b>.</p>
+      <table class="t"><tr><th>#</th><th>App</th><th>Nº no app</th><th>Cliente</th><th>Código</th><th>Entregue</th><th></th></tr>${baixas.map((p) =>
+        `<tr><td>#${p.numero}</td><td>${seloCanal(p)}</td><td>${esc(p.id_externo || "—")}</td><td>${esc(p.cliente_nome)}</td>
+        <td>${p.codigo_app ? `<b class="codigo-app">${esc(p.codigo_app)}</b>` : `<span class="muted">sem código</span>`}</td><td>${hora(p.atualizado_em)}${entregadores.find((e) => e.id === p.entregador_id) ? " · " + esc(entregadores.find((e) => e.id === p.entregador_id).nome) : ""}</td>
+        <td><button class="btn ok peq" data-baixa="${p.id}">✓ Baixa feita</button></td></tr>`).join("")}</table></div>` : ""}
     <div class="caixa" style="margin-top:1rem"><h2>Finalizados hoje (${fim.length})</h2>
       ${fim.length ? `<table class="t"><tr><th>#</th><th>Hora</th><th>Cliente</th><th>Tipo</th><th>Situação</th><th class="num">Total</th><th></th></tr>${fim.map((p) =>
         `<tr><td>#${p.numero}</td><td>${hora(p.criado_em)}</td><td>${esc(p.cliente_nome)}</td><td>${p.tipo === "entrega" ? "Entrega" : p.tipo === "mesa" ? "Mesa " + esc(p.mesa) : "Retirada"} ${seloCanal(p)}</td>
@@ -411,6 +420,12 @@ function telaPedidos() {
   });
   C().querySelectorAll("[data-reimprimir]").forEach((b) => b.onclick = () => imprimir(pedidos.get(b.dataset.reimprimir)));
   C().querySelectorAll("[data-pagofim]").forEach((b) => b.onclick = () => acao("pago", b.dataset.pagofim));
+  C().querySelectorAll("[data-baixa]").forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    const { data, error } = await sb.from("pedidos").update({ baixa_app_em: new Date().toISOString() }).eq("id", b.dataset.baixa).select().single();
+    if (error) { b.disabled = false; return aviso(error.message, "erro"); }
+    pedidos.set(data.id, data); telaPedidos();
+  });
   C().querySelectorAll("[data-receberfim]").forEach((b) => b.onclick = () => acao("receber", b.dataset.receberfim));
 }
 
