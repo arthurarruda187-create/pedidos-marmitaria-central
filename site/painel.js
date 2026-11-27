@@ -739,7 +739,9 @@ async function carregarIndiceClientes(forcar = false) {
   const idx = new Map(), cont = new Map();
   for (const p of data || []) {
     for (const it of p.itens || []) cont.set(it.produto_id, (cont.get(it.produto_id) || 0) + it.quantidade);
-    if (!p.cliente_telefone || idx.has(p.cliente_telefone)) continue;
+    if (!p.cliente_telefone) continue;
+    const ja = idx.get(p.cliente_telefone);
+    if (ja) { if (!ja.end && p.endereco) { ja.end = p.endereco; ja.bairro = p.bairro; } continue; } // guarda o último endereço que ele usou
     idx.set(p.cliente_telefone, { tel: p.cliente_telefone, nome: p.cliente_nome, end: p.endereco, bairro: p.bairro, tipo: p.tipo, itens: p.itens || [], quando: p.criado_em });
   }
   maisVendidos = [...cont.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id).slice(0, 12);
@@ -825,7 +827,7 @@ async function telaPdv() {
         <div class="dir">${brl(l.total)}<span class="qtd"><button data-menos="${k}" aria-label="Menos">${i.quantidade === 1 ? "🗑" : "−"}</button><button data-mais="${k}" aria-label="Mais">+</button></span></div></div>`; }).join("")
         : `<p class="vazio">Toque nos produtos para adicionar</p>`}</div>
       <div class="grade2"><div><label class="rot">WhatsApp</label><input class="campo" data-f="tel" id="pTel" inputmode="tel" autocomplete="off" value="${esc(pdv.cliente.tel || "")}" placeholder="busca cliente"></div>
-        <div><label class="rot">Nome</label><input class="campo" data-f="nome" id="pNome" value="${esc(pdv.cliente.nome || "")}" placeholder="Balcão"></div></div>
+        <div><label class="rot">Nome</label><input class="campo" data-f="nome" id="pNome" value="${esc(pdv.cliente.nome || "")}" placeholder="digite o nome: busca o cliente" autocomplete="off"></div></div>
       <div id="pSugCli"></div>
       ${ce ? `<div class="especial-pdv">⭐ <b>Cliente especial</b>${ce.taxa_entrega != null ? ` · entrega <b>${brl(ce.taxa_entrega)}</b>` : ""}${devendo ? ` · deve <b>${brl(devendo)}</b> no fiado` : ""}${ce.obs ? `<br><small>${esc(ce.obs)}</small>` : ""}</div>`
         : devendo ? `<div class="especial-pdv">📝 Deve <b>${brl(devendo)}</b> no fiado</div>` : ""}
@@ -880,22 +882,31 @@ async function telaPdv() {
 
   function sugerirCliente() {
     const box = $("#pSugCli"); if (!box) return;
+    if (!indiceClientes) { box.innerHTML = ""; return; }
     const tel = String(pdv.cliente.tel || "").replace(/\D/g, "");
-    if (tel.length < 8 || !indiceClientes) { box.innerHTML = ""; return; }
-    const c = [...indiceClientes.values()].find((x) => x.tel.endsWith(tel) || x.tel === tel);
-    if (!c || (pdv.cliente.nome === c.nome && pdv.cliente.tel === c.tel)) { box.innerHTML = ""; return; }
-    box.innerHTML = `<div class="sug-cli"><div><b>${esc(c.nome)}</b><small>${c.end ? esc(c.end) + (c.bairro ? " · " + esc(c.bairro) : "") : "retirada"} · último ${dataBR(c.quando)}</small></div>
-      <div class="acs"><button class="btn peq" data-usar-cli>Usar</button>${c.itens.length ? `<button class="btn sec peq" data-repetir-cli>Repetir último</button>` : ""}</div></div>`;
-    const usar = () => {
+    const sem = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    const nome = sem(pdv.cliente.nome);
+    let cands = [];
+    if (tel.length >= 8) { const c = [...indiceClientes.values()].find((x) => x.tel.endsWith(tel) || x.tel === tel); if (c) cands = [c]; }
+    else if (nome.length >= 3) { // busca pelo nome: quem começa com o que foi digitado vem primeiro
+      cands = [...indiceClientes.values()].filter((x) => sem(x.nome).includes(nome))
+        .sort((a, b) => (sem(b.nome).startsWith(nome) - sem(a.nome).startsWith(nome)) || (new Date(b.quando) - new Date(a.quando))).slice(0, 4);
+    }
+    cands = cands.filter((c) => !(pdv.cliente.tel === c.tel && pdv.cliente.nome === c.nome));
+    if (!cands.length) { box.innerHTML = ""; return; }
+    box.innerHTML = cands.map((c, k) => `<div class="sug-cli"><div><b>${esc(c.nome)}</b> <span class="muted" style="font-size:.8rem">${esc(foneBonito(c.tel))}</span><small>${c.end ? "📍 " + esc(c.end) + (c.bairro ? " · " + esc(c.bairro) : "") : "retirada"} · último ${dataBR(c.quando)}</small></div>
+      <div class="acs"><button class="btn peq" data-usar-cli="${k}">Usar</button>${c.itens.length ? `<button class="btn sec peq" data-repetir-cli="${k}" title="Repetir o último pedido">↻</button>` : ""}</div></div>`).join("");
+    const usar = (c) => {
       Object.assign(pdv.cliente, { tel: c.tel, nome: c.nome, end: c.end || pdv.cliente.end });
       const b = c.bairro && cd.bairros.find((x) => x.nome === c.bairro && x.ativo);
-      if (c.tipo === "entrega" && !ehApp()) pdv.tipo = "entrega";
+      if (c.end && !ehApp() && pdv.tipo !== "mesa") pdv.tipo = "entrega";
       if (b) pdv.cliente.bairro_id = b.id;
+      pdv.assinatura = null;
     };
-    box.querySelector("[data-usar-cli]").onclick = () => { usar(); desenharCarrinho(); };
-    const rep = box.querySelector("[data-repetir-cli]");
-    if (rep) rep.onclick = () => {
-      usar();
+    box.querySelectorAll("[data-usar-cli]").forEach((bt) => bt.onclick = () => { usar(cands[bt.dataset.usarCli]); desenharCarrinho(); setTimeout(() => $("#pEnd")?.focus(), 0); });
+    box.querySelectorAll("[data-repetir-cli]").forEach((bt) => bt.onclick = () => {
+      const c = cands[bt.dataset.repetirCli];
+      usar(c);
       const validos = c.itens.filter((it) => cd.prods.some((p) => p.id === it.produto_id && p.ativo && !p.esgotado));
       pdv.itens.push(...validos.map((it) => ({ produto_id: it.produto_id, quantidade: it.quantidade, observacao: it.observacao || "",
         adicionais: (it.adicionais || []).map((a) => {
@@ -903,7 +914,7 @@ async function telaPdv() {
           return o ? { opcao_id: o.id, quantidade: a.quantidade } : null; }).filter(Boolean) })));
       if (validos.length < c.itens.length) aviso("Alguns itens do último pedido não estão disponíveis", "info");
       desenharCarrinho(); desenharProdutos();
-    };
+    });
   }
 
   function adicionar(id) {
@@ -992,6 +1003,7 @@ async function telaPdv() {
       const antes = t.dataset.f === "tel" ? (especialDe(pdv.cliente.tel)?.telefone || "") + "|" + fiadoDe(pdv.cliente.tel) : null;
       pdv.cliente[t.dataset.f] = t.value;
       if (t.dataset.f === "tel") { pdv.assinatura = null; sugerirCliente(); }
+      if (t.dataset.f === "nome") sugerirCliente();
       if (t.dataset.f === "end") sugerirRua(t.value);
       if (t.dataset.f === "taxaManual") { // atualiza o total enquanto digita, sem redesenhar
         $("#pTotalV").textContent = brl(total()); const b = $("#pFinalizar"); if (b && !b.disabled) b.textContent = "Lançar pedido · " + brl(total());
