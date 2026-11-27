@@ -556,13 +556,13 @@ function abrirSacola() {
         <div><label class="rotulo">Horário</label><select class="campo" id="agHora"></select></div></div>
         <div class="erro" id="agAviso" style="margin-top:.4rem"></div></div></div>` : ""}
 
-    <div class="bloco"><h3>Seus dados</h3>
+    ${naMesa ? "" : `<div class="bloco"><h3>Seus dados</h3>
       <label class="rotulo" style="margin-top:0">Nome</label><input class="campo" id="cNome" autocomplete="name" maxlength="80" value="${esc(salvo.nome || "")}">
-      <label class="rotulo">WhatsApp${naMesa ? ` <span class="muted">(opcional)</span>` : ""}</label><input class="campo" id="cTel" type="tel" inputmode="tel" autocomplete="tel" maxlength="20" value="${esc(salvo.tel || "")}" placeholder="(43) 99999-9999">
-      ${naMesa ? "" : `<details ${salvo.empresa ? "open" : ""} style="margin-top:.6rem"><summary class="muted" style="cursor:pointer;font-size:.9rem">🏢 É pedido para uma empresa?</summary>
+      <label class="rotulo">WhatsApp</label><input class="campo" id="cTel" type="tel" inputmode="tel" autocomplete="tel" maxlength="20" value="${esc(salvo.tel || "")}" placeholder="(43) 99999-9999">
+      <details ${salvo.empresa ? "open" : ""} style="margin-top:.6rem"><summary class="muted" style="cursor:pointer;font-size:.9rem">🏢 É pedido para uma empresa?</summary>
         <label class="rotulo">Nome da empresa</label><input class="campo" id="cEmpresa" maxlength="80" value="${esc(salvo.empresa || "")}" placeholder="Ex.: Escritório Contábil Silva">
-        <p class="muted" style="font-size:.82rem;margin:.3rem 0 0">Dica: no produto, preencha "Para quem é?" que cada marmita sai com o nome na etiqueta.</p></details>`}
-    </div>
+        <p class="muted" style="font-size:.82rem;margin:.3rem 0 0">Dica: no produto, preencha "Para quem é?" que cada marmita sai com o nome na etiqueta.</p></details>
+    </div>`}
 
     <div class="bloco"><h3>Pagamento</h3>
       <div class="pagamentos">${formas.map(([v, t], i) => `<label><input type="radio" name="pag" value="${v}" ${(salvo.pag ? salvo.pag === v : i === 0) ? "checked" : ""}>${t}</label>`).join("")}</div>
@@ -756,7 +756,7 @@ function abrirSacola() {
     const codigo = $("#cCupom", m).value.trim();
     const msg = $("#msgCupom", m);
     if (!codigo) { cupom = null; msg.textContent = ""; redesenhar(); return; }
-    const { data, error } = await sb.rpc("validar_cupom", { p_codigo: codigo, p_subtotal: subtotal(), p_telefone: $("#cTel", m).value });
+    const { data, error } = await sb.rpc("validar_cupom", { p_codigo: codigo, p_subtotal: subtotal(), p_telefone: $("#cTel", m)?.value || "" });
     const r = data?.[0];
     if (error || !r?.valido) { cupom = null; msg.className = "msg-cupom ruim"; msg.textContent = r?.mensagem || "Cupom inválido."; }
     else { cupom = { codigo: r.codigo, tipo: r.tipo, valor: Number(r.valor) }; msg.className = "msg-cupom ok"; msg.textContent = "✓ " + r.mensagem; }
@@ -768,7 +768,7 @@ function abrirSacola() {
     const btn = $("#enviarPedido", m), erro = $("#erroPedido", m);
     erro.textContent = "";
     const dados = {
-      cliente_nome: $("#cNome", m).value, cliente_telefone: $("#cTel", m).value, cliente_email: $("#cEmail", m).value,
+      cliente_nome: naMesa ? `Mesa ${MESA}` : $("#cNome", m).value, cliente_telefone: naMesa ? "" : $("#cTel", m).value, cliente_email: $("#cEmail", m).value,
       tipo, mesa: naMesa ? MESA : undefined, endereco: [$("#cRua", m).value.trim(), $("#cNum", m).value.trim()].filter(Boolean).join(", ") + ($("#cCompl", m).value.trim() ? " - " + $("#cCompl", m).value.trim() : ""), bairro_id: $("#cBairro", m)?.value || null, observacao: $("#cObs", m).value,
       pagamento: pag(), troco_para: $("#cTroco", m).value || null, cupom: cupom?.codigo || null,
       itens: carrinho.map(({ produto_id, quantidade, observacao, adicionais, para }) => ({ produto_id, quantidade, observacao, adicionais, para })),
@@ -787,7 +787,7 @@ function abrirSacola() {
       if (taxaMapa() == null) { erro.textContent = "Esse local fica fora da nossa área de entrega."; return; }
       dados.entrega_lat = ponto.lat; dados.entrega_lng = ponto.lng;
     }
-    gravar("cliente", { ...salvo, nome: dados.cliente_nome, tel: dados.cliente_telefone || salvo.tel, ...(naMesa ? {} : { end: dados.endereco, rua: $("#cRua", m).value.trim(), num: $("#cNum", m).value.trim(), compl: $("#cCompl", m).value.trim(), email: dados.cliente_email, bairro_id: dados.bairro_id, tipo, pag: dados.pagamento, ponto: modoMapa ? ponto : salvo.ponto, empresa: dados.empresa || "" }) });
+    if (!naMesa) gravar("cliente", { ...salvo, nome: dados.cliente_nome, tel: dados.cliente_telefone || salvo.tel, ...(naMesa ? {} : { end: dados.endereco, rua: $("#cRua", m).value.trim(), num: $("#cNum", m).value.trim(), compl: $("#cCompl", m).value.trim(), email: dados.cliente_email, bairro_id: dados.bairro_id, tipo, pag: dados.pagamento, ponto: modoMapa ? ponto : salvo.ponto, empresa: dados.empresa || "" }) });
     // mesma chave enquanto o cliente tenta de novo: se o 1º envio chegou e a resposta se perdeu, não duplica
     if (!window.__chaveEnvio || window.__chaveEnvioDe !== JSON.stringify(dados)) { window.__chaveEnvio = crypto.randomUUID(); window.__chaveEnvioDe = JSON.stringify(dados); }
     dados.chave_envio = window.__chaveEnvio;

@@ -64,7 +64,7 @@ $("#trocarSenha").onclick = async () => {
 // Navegação
 // ======================================================================
 const ABAS = { pedidos: telaPedidos, pdv: telaPdv, financeiro: telaFinanceiro, clientes: telaClientes, entregadores: telaEntregadores,
-  cardapio: telaCardapio, cupons: telaCupons, entrega: telaEntrega, loja: telaLoja, avaliacoes: telaAvaliacoes, mesas: telaMesas, whatsapp: telaWhatsapp, vendidos: telaMaisVendidos, apps: telaApps };
+  cardapio: telaCardapio, cupons: telaCupons, entrega: telaEntrega, loja: telaLoja, avaliacoes: telaAvaliacoes, mesas: telaMesas, whatsapp: telaWhatsapp, vendidos: telaMaisVendidos, apps: telaApps, historico: telaHistorico };
 function irPara(nome) {
   if (!ABAS[nome]) nome = "pedidos";
   aba = nome;
@@ -515,13 +515,27 @@ function cupomHtml(p, via = "") {
     <div class="rodape">Obrigado pela preferência! 😊</div>
   </section>`;
 }
+// Impressão sempre por um quadro escondido: não abre aba nem janela.
+// Com o atalho "Painel (impressão direta)" (Chrome/Edge com --kiosk-printing) sai direto na impressora, sem tela nenhuma.
+function quadroImpressao(larguraMm = 80) {
+  document.getElementById("frameImp")?.remove();
+  const fr = document.createElement("iframe");
+  fr.id = "frameImp"; fr.setAttribute("aria-hidden", "true");
+  fr.style.cssText = `position:fixed;left:-10000px;top:0;width:${larguraMm}mm;height:300mm;border:0;visibility:visible`;
+  document.body.appendChild(fr);
+  return fr.contentWindow;
+}
+function mandarParaImpressora(w) {
+  const imgs = [...w.document.images];
+  Promise.race([Promise.all(imgs.map((i) => i.complete ? 0 : new Promise((ok) => { i.onload = i.onerror = ok; }))), new Promise((ok) => setTimeout(ok, 2500))])
+    .then(() => setTimeout(() => { try { w.focus(); w.print(); } catch (e) { aviso("Não foi possível imprimir: " + e.message, "erro"); } }, 150));
+}
 // Etiquetas: uma por marmita, com o nome de quem vai comer (pedido para empresas)
 function imprimirEtiquetas(p) {
   const { papel } = confImp();
   const larg = papel === "58" ? 48 : 72;
   const etiquetas = (p.itens || []).flatMap((it) => Array.from({ length: it.quantidade }, () => it));
-  const w = window.open("", "etiquetas", "width=420,height=720");
-  if (!w) return aviso("Libere as janelas (pop-up) deste site para imprimir.", "erro");
+  const w = quadroImpressao(papel);
   w.document.open();
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas #${p.numero}</title><style>
     @page { size: ${papel}mm auto; margin: 2mm; }
@@ -539,8 +553,9 @@ function imprimirEtiquetas(p) {
     ${(it.adicionais || []).map((a) => `<div class="ad">+ ${esc(a.nome)}</div>`).join("")}
     ${it.observacao ? `<div class="obs">⚠ ${esc(it.observacao)}</div>` : ""}
     <div class="rod">${p.empresa ? esc(p.empresa) + " · " : ""}Pedido #${p.numero} · ${k + 1}/${etiquetas.length}</div></div>`).join("")}
-  <script>window.onload = () => { window.focus(); window.print(); };<\/script></body></html>`);
+  </body></html>`);
   w.document.close();
+  mandarParaImpressora(w);
 }
 
 function imprimir(p, { auto = false } = {}) {
@@ -548,16 +563,7 @@ function imprimir(p, { auto = false } = {}) {
   marcarImpresso(p.id);
   const { papel, vias } = confImp();
   const larg = papel === "58" ? 48 : 72; // área útil em mm
-  // clique manual: janela própria (o jeito mais confiável com drivers de impressora térmica);
-  // impressão automática: quadro fora da tela, com tamanho de verdade (quadro de tamanho zero pode sair em branco)
-  let w = auto ? null : window.open("", "impressao", "width=420,height=720");
-  if (!w) {
-    document.getElementById("frameImp")?.remove();
-    const fr = document.createElement("iframe");
-    fr.id = "frameImp"; fr.style.cssText = `position:fixed;left:-10000px;top:0;width:${papel}mm;height:300mm;border:0;visibility:visible`;
-    document.body.appendChild(fr);
-    w = fr.contentWindow;
-  }
+  const w = quadroImpressao(papel);
   w.document.open();
   const nomesVia = vias > 1 ? ["VIA DA COZINHA", p.tipo === "entrega" ? "VIA DO ENTREGADOR" : "VIA DO CAIXA", "3ª VIA"] : [""];
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Pedido ${p.numero}</title><style>
@@ -598,15 +604,7 @@ function imprimir(p, { auto = false } = {}) {
     .rodape { text-align: center; font-size: .85em; margin-top: 3mm; }
   </style></head><body>${nomesVia.slice(0, Math.max(1, vias)).map((v) => cupomHtml(p, v)).join("")}</body></html>`);
   w.document.close();
-  // espera a logo carregar (no máx. 2,5 s) antes de mandar para a impressora
-  const imgs = [...w.document.images];
-  Promise.race([Promise.all(imgs.map((i) => i.complete ? 0 : new Promise((ok) => { i.onload = i.onerror = ok; }))), new Promise((ok) => setTimeout(ok, 2500))])
-    .then(() => setTimeout(() => {
-      try {
-        w.focus(); w.print();
-        if (w !== document.getElementById("frameImp")?.contentWindow) setTimeout(() => { try { w.close(); } catch {} }, 1500);
-      } catch (e) { aviso("Não foi possível imprimir: " + e.message, "erro"); }
-    }, 150));
+  mandarParaImpressora(w);
 }
 
 // Logo em preto e branco pontilhado (dithering), como a impressora térmica imprime
@@ -668,7 +666,7 @@ function proximaImpressao() {
 async function configurarImpAuto() {
   const r = await formulario({ titulo: "Impressão", texto: "Vale só para este aparelho (o computador ligado na impressora).", campos: [
     { nome: "modo", rotulo: "Imprimir sozinho", tipo: "select", valor: impAuto(), opcoes: [["", "Desligada"], ["chegar", "Assim que o pedido chegar"], ["aceitar", "Quando eu aceitar o pedido"]],
-      dica: "Para imprimir sem nem abrir a janela de impressão, abra o Chrome com a opção --kiosk-printing (eu explico como no guia)." },
+      dica: "Para sair direto na impressora (sem a tela de imprimir), abra o painel pelo atalho \"Painel - impressão direta\" e deixe a térmica como impressora padrão do Windows." },
     { nome: "papel", rotulo: "Largura do papel", tipo: "select", valor: confImp().papel, opcoes: [["80", "80 mm (mais comum)"], ["58", "58 mm (bobina pequena)"]] },
     { nome: "vias", rotulo: "Quantas vias", tipo: "select", valor: String(confImp().vias), opcoes: [["1", "1 via"], ["2", "2 vias (cozinha + entregador/caixa)"]] }],
     botao: "Salvar", extra: "teste" });
@@ -1345,7 +1343,7 @@ async function telaEntregadores() {
   C().querySelectorAll("[data-zap]").forEach((b) => b.onclick = () => { const g = grupoDe(b); window.open(`https://wa.me/${foneWhats(g.e.telefone)}?text=${encodeURIComponent(textoResumo(g))}`, "_blank"); });
   C().querySelectorAll("[data-imp]").forEach((b) => b.onclick = () => {
     const g = grupoDe(b), r = resumo(g.ps);
-    const w = window.open("", "impressao", "width=420,height=720"); if (!w) return aviso("Permita pop-ups para imprimir.", "erro");
+    const w = quadroImpressao(confImp().papel); w.document.open();
     const larg = confImp().papel === "58" ? 48 : 72;
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Entregas ${esc(g.e.nome)}</title><style>@page{margin:2mm}body{width:${larg}mm;margin:0;font:12px/1.35 Arial,sans-serif}
       h1{font-size:16px;margin:0;text-align:center}.c{text-align:center}.ln{display:flex;justify-content:space-between;border-bottom:1px dotted #888;padding:1mm 0}.tot{font-weight:900;font-size:14px;border-top:2px solid #000;margin-top:2mm;padding-top:1mm}</style></head>
@@ -1354,7 +1352,7 @@ async function telaEntregadores() {
       <div class="ln tot"><span>${r.n} entregas · TAXAS</span><span>${brl(r.taxas)}</span></div>
       ${r.dinheiro ? `<div class="ln"><span>Dinheiro recebido</span><span>${brl(r.dinheiro)}</span></div>` : ""}${r.cartao ? `<div class="ln"><span>Maquininha</span><span>${brl(r.cartao)}</span></div>` : ""}
       <br><div class="c">Assinatura: ______________________</div></body></html>`);
-    w.document.close(); setTimeout(() => { w.focus(); w.print(); setTimeout(() => { try { w.close(); } catch {} }, 1500); }, 300);
+    w.document.close(); mandarParaImpressora(w);
   });
 
   $("#novoEnt").onclick = async () => {
@@ -1903,9 +1901,22 @@ async function telaAvaliacoes() {
     <div class="caixa">${av.length ? `<table class="t"><tr><th>Data</th><th>Pedido</th><th>Cliente</th><th>Nota</th><th>Comentário</th><th></th></tr>${av.map((a) => `<tr>
       <td>${dataBR(a.criado_em)}</td><td>#${a.pedidos?.numero ?? "—"}</td><td>${esc(a.pedidos?.cliente_nome || "")}</td><td style="white-space:nowrap">${est(a.nota)}</td>
       <td>${a.comentario ? esc(a.comentario) : `<span class="muted">—</span>`}</td>
-      <td>${a.pedidos?.cliente_telefone ? `<a class="btn sec peq" target="_blank" href="https://wa.me/${foneWhats(a.pedidos.cliente_telefone)}?text=${encodeURIComponent(`Olá, ${(a.pedidos.cliente_nome || "").split(" ")[0]}! Obrigado pela avaliação do pedido #${a.pedidos.numero} 😊`)}">💬</a>` : ""}</td></tr>`).join("")}</table>`
+      <td style="white-space:nowrap">${foneAv(a) ? `<a class="btn sec peq" target="_blank" title="WhatsApp ${esc(foneBonito(foneAv(a)))}" href="https://wa.me/${foneWhats(foneAv(a))}?text=${encodeURIComponent(`Olá, ${(a.pedidos?.cliente_nome || "").split(" ")[0]}! Obrigado pela avaliação do pedido #${a.pedidos?.numero ?? ""} 😊`)}">💬</a>` : ""}
+        <button class="btn sec peq" data-fone-av="${a.id}" title="Arrumar o número do WhatsApp">✏️ ${foneAv(a) ? esc(foneBonito(foneAv(a))) : "número"}</button></td></tr>`).join("")}</table>`
       : `<p class="vazio">Nenhuma avaliação ainda. Depois que o pedido é marcado como entregue, o cliente vê as estrelinhas na página do pedido.</p>`}</div>`;
+  C().querySelectorAll("[data-fone-av]").forEach((b) => b.onclick = async () => {
+    const a = av.find((x) => x.id === b.dataset.foneAv);
+    const r = await formulario({ titulo: "Número do WhatsApp", texto: `Avaliação do pedido #${a.pedidos?.numero ?? "—"}${a.pedidos?.cliente_nome ? " · " + esc(a.pedidos.cliente_nome) : ""}. Deixe vazio para voltar ao número do pedido.`,
+      campos: [{ nome: "tel", rotulo: "WhatsApp (com DDD)", tipo: "tel", valor: foneAv(a) ? foneBonito(foneAv(a)) : "", placeholder: "(43) 99999-9999", opcional: true }], botao: "Salvar número" });
+    if (!r) return;
+    const dig = String(r.tel || "").replace(/\D/g, "");
+    if (dig && (dig.length < 10 || dig.length > 13)) return aviso("Número incompleto: use DDD + número.", "erro");
+    const { error } = await sb.from("avaliacoes").update({ telefone: dig || null }).eq("id", a.id);
+    if (error) return aviso("Não salvou: " + error.message, "erro");
+    aviso("Número salvo", "ok"); telaAvaliacoes();
+  });
 }
+const foneAv = (a) => a.telefone || a.pedidos?.cliente_telefone || "";
 
 // ======================================================================
 // Mesas (QR Code)
@@ -2208,6 +2219,124 @@ async function lerQrEvolution(botao) {
     if (Date.now() - inicio >= 180000) { aviso("O QR Code expirou. Clique em Conectar de novo.", "erro"); return painelEvolution(); }
     aviso("WhatsApp conectado! 🎉", "ok"); telaWhatsapp();
   } catch (e) { aviso("Não conectou: " + e.message, "erro"); painelEvolution(); }
+}
+
+// ======================================================================
+// Histórico de pedidos
+// ======================================================================
+const histFiltro = { periodo: "7", de: "", ate: "", status: "", canal: "", busca: "" };
+function intervaloHistorico() {
+  const f = histFiltro, d0 = hoje0();
+  if (f.periodo === "hoje") return [d0, null];
+  if (f.periodo === "ontem") { const a = new Date(d0); a.setDate(a.getDate() - 1); return [a, d0]; }
+  if (f.periodo === "custom") {
+    const de = f.de ? new Date(f.de + "T00:00:00") : new Date(d0.getTime() - 30 * 864e5);
+    const ate = f.ate ? new Date(new Date(f.ate + "T00:00:00").getTime() + 864e5) : null;
+    return [de, ate];
+  }
+  const a = new Date(d0); a.setDate(a.getDate() - (Number(f.periodo) - 1)); return [a, null];
+}
+async function telaHistorico() {
+  const f = histFiltro;
+  const canais = [["", "Todos os canais"], ["cardapio", "Cardápio digital"], ["balcao", "Balcão / telefone"], ["mesa", "Mesa (QR Code)"], ...APPS_DELIVERY.map((a) => [a, CANAIS[a]?.nome || a])];
+  C().innerHTML = `<div class="topo-pag">${botaoMenu()}<h1>Histórico de pedidos</h1></div>
+    <div class="caixa">
+      <div class="hist-filtros">
+        <div><label class="rot">Período</label><select class="campo" id="hPer">${[["hoje", "Hoje"], ["ontem", "Ontem"], ["7", "Últimos 7 dias"], ["30", "Últimos 30 dias"], ["90", "Últimos 90 dias"], ["custom", "Escolher datas…"]]
+          .map(([v, t]) => `<option value="${v}" ${f.periodo === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+        <div id="hDatas" class="${f.periodo === "custom" ? "" : "oculto"}" style="display:flex;gap:.5rem">
+          <div><label class="rot">De</label><input class="campo" type="date" id="hDe" value="${f.de}"></div>
+          <div><label class="rot">Até</label><input class="campo" type="date" id="hAte" value="${f.ate}"></div></div>
+        <div><label class="rot">Situação</label><select class="campo" id="hSt">${[["", "Todas"], ["entregue", "Entregues"], ["cancelado", "Cancelados"], ["andamento", "Em andamento"]]
+          .map(([v, t]) => `<option value="${v}" ${f.status === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+        <div><label class="rot">Canal</label><select class="campo" id="hCanal">${canais.map(([v, t]) => `<option value="${v}" ${f.canal === v ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></div>
+        <div class="busca"><label class="rot">Buscar</label><input class="campo" id="hBusca" placeholder="Nº do pedido, nome ou telefone" value="${esc(f.busca)}"></div>
+      </div>
+      <div id="hResumo"></div>
+      <div id="hLista"><p class="muted">Carregando…</p></div>
+    </div>`;
+  let lista = [];
+  const desenhar = () => {
+    const t = f.busca.trim().toLowerCase(), dig = t.replace(/\D/g, "");
+    const vis = lista.filter((p) => {
+      if (f.status === "andamento" ? ["entregue", "cancelado"].includes(p.status) : f.status && p.status !== f.status) return false;
+      if (f.canal && (p.canal || "cardapio") !== f.canal) return false;
+      if (!t) return true;
+      return String(p.numero) === t.replace(/^#/, "") || (p.cliente_nome || "").toLowerCase().includes(t)
+        || (dig.length >= 4 && (p.cliente_telefone || "").includes(dig)) || (p.id_externo || "").toLowerCase() === t;
+    });
+    const validos = vis.filter((p) => p.status !== "cancelado" && p.status !== "aguardando_pagamento");
+    const soma = validos.reduce((s, p) => s + num(p.total), 0);
+    $("#hResumo").innerHTML = `<div class="kpis" style="margin-bottom:.8rem">
+      <div class="kpi"><span>Pedidos</span><b>${vis.length}</b>${vis.length >= 2000 ? `<small>mostrando os 2000 mais recentes</small>` : ""}</div>
+      <div class="kpi"><span>Vendido (sem cancelados)</span><b>${brl(soma)}</b></div>
+      <div class="kpi"><span>Ticket médio</span><b>${validos.length ? brl(soma / validos.length) : "—"}</b></div>
+      <div class="kpi"><span>Cancelados</span><b>${vis.filter((p) => p.status === "cancelado").length}</b></div></div>`;
+    $("#hLista").innerHTML = vis.length ? `<table class="t"><tr><th>#</th><th>Data</th><th>Cliente</th><th>Tipo</th><th>Situação</th><th class="num">Total</th><th></th></tr>${vis.map((p) => `
+      <tr class="clicavel" data-ver="${p.id}"><td><b>#${p.numero}</b></td><td style="white-space:nowrap">${dataBR(p.criado_em)} ${hora(p.criado_em)}</td>
+        <td>${esc(p.cliente_nome)}${p.cliente_telefone ? `<br><small class="muted">${esc(foneBonito(p.cliente_telefone))}</small>` : ""}</td>
+        <td>${p.tipo === "entrega" ? "🛵 Entrega" : p.tipo === "mesa" ? "🍽️ Mesa " + esc(p.mesa || "") : "🏪 Retirada"} ${seloCanal(p)}</td>
+        <td><span class="badge ${p.status === "cancelado" ? "perigo" : p.status === "entregue" ? "ok" : "alerta"}">${esc(NOMES_STATUS[p.status] || p.status)}</span></td>
+        <td class="num">${brl(p.total)}</td>
+        <td class="num" style="white-space:nowrap"><button class="btn sec peq" data-imp="${p.id}" title="Imprimir de novo">🖨</button></td></tr>`).join("")}</table>`
+      : `<p class="vazio">Nenhum pedido nesse filtro.</p>`;
+    C().querySelectorAll("[data-ver]").forEach((tr) => tr.onclick = (e) => { if (!e.target.closest("button")) verHistoricoPedido(lista.find((p) => p.id === tr.dataset.ver)); });
+    C().querySelectorAll("[data-imp]").forEach((b) => b.onclick = () => imprimir(lista.find((p) => p.id === b.dataset.imp)));
+  };
+  const carregar = async () => {
+    $("#hLista").innerHTML = `<p class="muted">Carregando…</p>`;
+    const [de, ate] = intervaloHistorico();
+    let q = sb.from("pedidos").select("*").gte("criado_em", de.toISOString()).order("criado_em", { ascending: false }).limit(2000);
+    if (ate) q = q.lt("criado_em", ate.toISOString());
+    const { data, error } = await q;
+    if (aba !== "historico") return;
+    if (error) return $("#hLista").innerHTML = `<p class="erro">Não carregou: ${esc(error.message)}</p>`;
+    lista = data || []; desenhar();
+  };
+  $("#hPer").onchange = (e) => { f.periodo = e.target.value; $("#hDatas").classList.toggle("oculto", f.periodo !== "custom"); carregar(); };
+  $("#hDe").onchange = (e) => { f.de = e.target.value; carregar(); };
+  $("#hAte").onchange = (e) => { f.ate = e.target.value; carregar(); };
+  $("#hSt").onchange = (e) => { f.status = e.target.value; desenhar(); };
+  $("#hCanal").onchange = (e) => { f.canal = e.target.value; desenhar(); };
+  let tBusca; $("#hBusca").oninput = (e) => { clearTimeout(tBusca); tBusca = setTimeout(() => { f.busca = e.target.value; desenhar(); }, 200); };
+  carregar();
+}
+
+const NOMES_EVENTO = { criado: "Pedido feito", aguardando_pagamento: "Aguardando pagamento online", novo: "Pagamento confirmado — chegou no quadro",
+  preparo: "Aceito — em preparo", pronto: "Pronto", saiu: "Saiu para entrega", entregue: "Entregue", cancelado: "Cancelado" };
+async function verHistoricoPedido(p) {
+  if (!p) return;
+  const m = abrirModal(`<h2 style="margin-top:0">Pedido #${p.numero} ${seloCanal(p)}</h2>
+    <p class="muted" style="margin-top:-.3rem">${dataBR(p.criado_em)} às ${hora(p.criado_em)} · ${esc(NOMES_STATUS[p.status] || p.status)}</p>
+    <div class="grade2" style="align-items:start">
+      <div><h3 style="margin:.2rem 0">Linha do tempo</h3><ul class="linha-tempo" id="hvTempo"><li class="cinza">Carregando…</li></ul></div>
+      <div><h3 style="margin:.2rem 0">Pedido</h3><div class="pre-pedido">${esc(textoPedido(p, loja))}</div></div>
+    </div>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:1rem">
+      <button class="btn" id="hvImp">🖨 Imprimir de novo</button>
+      ${p.cliente_telefone ? `<a class="btn sec" target="_blank" rel="noopener" href="https://wa.me/${foneWhats(p.cliente_telefone)}">💬 WhatsApp do cliente</a>` : ""}
+    </div>`, 820);
+  $("#hvImp", m).onclick = () => imprimir(p);
+  const [ev, msgs, ent] = await Promise.all([
+    sb.from("pedido_eventos").select("status,em").eq("pedido_id", p.id).order("em"),
+    sb.from("mensagens_whatsapp").select("status,ok,erro,criado_em").eq("pedido_id", p.id).order("criado_em"),
+    p.entregador_id ? sb.from("entregadores").select("nome").eq("id", p.entregador_id).maybeSingle() : Promise.resolve({ data: null }),
+  ]);
+  const itens = [];
+  if (ev.error || !(ev.data || []).length) itens.push({ em: p.criado_em, t: "Pedido feito" });
+  for (const e of ev.data || []) {
+    let t = NOMES_EVENTO[e.status] || e.status;
+    if (e.status === "saiu" && ent.data?.nome) t += ` com ${ent.data.nome}`;
+    if (e.status === "entregue" && p.entregue_com_codigo) t += " (confirmado com o código 🔐)";
+    if (e.status === "cancelado" && p.motivo_cancelamento) t += ` — ${p.motivo_cancelamento}`;
+    itens.push({ em: e.em, t });
+  }
+  for (const x of msgs.data || []) itens.push({ em: x.criado_em, t: `💬 WhatsApp "${MSG_WHATS_ROTULO[x.status] || x.status}" ${x.ok ? "enviado" : x.ok === false ? "não enviado" : "enviando"}`, sub: x.ok === false ? x.erro : "", cinza: true });
+  itens.sort((a, b) => a.em.localeCompare(b.em));
+  const tempo = $("#hvTempo", m); if (!tempo) return;
+  const ini = new Date(itens[0]?.em || p.criado_em);
+  tempo.innerHTML = itens.map((x) => { const min = Math.round((new Date(x.em) - ini) / 60000);
+    return `<li class="${x.cinza ? "cinza" : ""}"><b>${esc(x.t)}</b><small>${dataBR(x.em) !== dataBR(p.criado_em) ? dataBR(x.em) + " " : ""}${hora(x.em)}${min > 0 ? ` · ${min} min depois` : ""}${x.sub ? " · " + esc(x.sub) : ""}</small></li>`; }).join("");
 }
 
 // ======================================================================
