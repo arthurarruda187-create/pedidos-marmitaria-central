@@ -6,6 +6,10 @@
 <meta name="theme-color" content="#111827">
 <meta name="robots" content="noindex">
 <title>Minhas entregas</title>
+<link rel="manifest" href="./entregador.webmanifest">
+<link rel="apple-touch-icon" href="icones/painel-apple-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Entregas">
 <style>
   :root { --cor: #e4002b; --ok: #16a34a; --linha: #e5e7eb; --muted: #6b7280; }
   * { box-sizing: border-box; }
@@ -37,15 +41,23 @@
   .vazio { text-align: center; color: var(--muted); padding: 3rem 1rem; }
   .feito { text-align: center; padding: .6rem; color: var(--ok); font-weight: 700; }
   .toast { position: fixed; left: 50%; bottom: 1.2rem; transform: translateX(-50%); background: #111827; color: #fff; padding: .7rem 1rem; border-radius: 12px; font-weight: 600; z-index: 9; }
+  .oculto { display: none !important; }
 </style>
 </head>
 <body>
-<header><h1 id="titulo">Minhas entregas</h1><small id="sub">Carregando…</small></header>
+<header><h1 id="titulo">Minhas entregas</h1><small id="sub">Carregando…</small>
+  <button id="btnInstalar" class="oculto" style="margin-top:.5rem;border:0;border-radius:10px;padding:.5rem .8rem;background:#fff;color:#111827;font-weight:700">📲 Instalar o app no celular</button></header>
 <main id="lista"></main>
 <script type="module">
 import { sb, SUPABASE_URL, SUPABASE_ANON_KEY, brl, esc, NOMES_PAGAMENTO, foneWhats, foneBonito } from "./comum.js";
 
-const token = new URLSearchParams(location.search).get("t") || "";
+import { ligarBotaoInstalar } from "./app.js";
+// o link da loja traz o código do entregador (?t=...). Guardamos no celular para o app instalado abrir direto.
+const daUrl = new URLSearchParams(location.search).get("t") || "";
+let salvo = ""; try { salvo = localStorage.getItem("entregadorToken") || ""; } catch {}
+const token = daUrl || salvo;
+if (daUrl && daUrl !== salvo) { try { localStorage.setItem("entregadorToken", daUrl); } catch {} }
+ligarBotaoInstalar(document.getElementById("btnInstalar"), "o app de entregas");
 const NOMES_CANAL = { cardapio: "Cardápio", balcao: "Balcão", ifood: "iFood", aiqfome: "aiqfome", keeta: "Keeta", "99food": "99Food" };
 const NOMES_ST = { preparo: "Em preparo", pronto: "Pronto", saiu: "Saiu" };
 const toast = (t) => { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.appendChild(d); setTimeout(() => d.remove(), 2800); };
