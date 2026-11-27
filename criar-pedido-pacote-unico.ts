@@ -44,7 +44,7 @@ export type EntradaItem = {
   adicionais?: { opcao_id: string; quantidade: number }[];
 };
 
-export type Pagamento = "pix_online" | "cartao_online" | "dinheiro" | "cartao_entrega" | "pix_entrega" | "pago_app" | "fiado";
+export type Pagamento = "pix_online" | "cartao_online" | "dinheiro" | "cartao_entrega" | "pix_entrega" | "pago_app" | "fiado" | "caixa";
 export const APPS = ["ifood", "aiqfome", "keeta", "99food"] as const;
 export type App = typeof APPS[number];
 
@@ -191,9 +191,9 @@ export function calcularPedido(
   const pagamentosPermitidos: Record<string, boolean> = origem
     ? { pago_app: true, dinheiro: true, cartao_entrega: true }
     : balcao
-    ? { dinheiro: true, cartao_entrega: true, pix_entrega: true, fiado: true }
+    ? { dinheiro: true, cartao_entrega: true, pix_entrega: true, fiado: true, caixa: mesaPedido }
     : mesaPedido
-    ? { dinheiro: true, cartao_entrega: true, pix_entrega: true }
+    ? { caixa: true, dinheiro: true, cartao_entrega: true, pix_entrega: true }
     : {
       pix_online: loja.aceita_pix_online,
       cartao_online: loja.aceita_cartao_online,
